@@ -36,7 +36,8 @@ npm run pack:personal:mac
 DMG and ZIP artifacts for Intel and Apple Silicon are written under
 `release/personal/`. The dedicated config keeps the application identity for
 existing Netcatty data, embeds the personal version, and points update metadata
-to the personal fork. Packages are unsigned and not notarized. The command does
+to the personal fork. Packages use a local ad-hoc signature without a Developer ID certificate and
+are not notarized. The command does
 not publish a GitHub release.
 
 ## Checks
@@ -66,3 +67,10 @@ The last three commands require Electron and a graphical macOS session.
   tool artifact parses during 60 streaming updates; tool expansion and edits work.
 - Electron terminal background-rendering regression passed, including rapid
   switches, alternate screen, and split layouts.
+
+- Both macOS DMG/ZIP pairs built successfully; package metadata reports
+  `1.1.84-C1` and the personal fork update source. Both DMG checksums verified.
+- The packaged Intel app launched with an isolated temporary profile, stayed
+  running for 15 seconds, and exited cleanly. Apple Silicon was cross-built
+  and its binary architecture checked; it was not launched on this Intel host.
+- SHA-256 checksums are available in `release/personal/SHA256SUMS`.
