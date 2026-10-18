@@ -1,4 +1,5 @@
 const base = require('./electron-builder.config.cjs');
+const { platform } = require('node:process');
 
 // Reproducible personal build; keep the application identity and existing data.
 module.exports = {
@@ -8,7 +9,7 @@ module.exports = {
         version: '1.1.84-C1',
         homepage: 'https://github.com/caspar94/Netcatty',
     },
-    directories: { ...base.directories, output: process.platform === 'darwin' ? 'release/personal' : 'release' },
+    directories: { ...base.directories, output: platform === 'darwin' ? 'release/personal' : 'release' },
     mac: { ...base.mac, identity: null, notarize: false },
     publish: [{ provider: 'github', owner: 'caspar94', repo: 'Netcatty', releaseType: 'release' }],
 };
