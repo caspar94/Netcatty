@@ -31,6 +31,7 @@
 !README.zh-CN.md
 !README.zh-TW.md
 !electron-builder.config.cjs
+!electron-builder.personal.config.cjs
 !eslint.config.js
 !flake.lock
 !flake.nix

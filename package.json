@@ -75,7 +75,8 @@
     "test:xterm-webgl-overflow": "electron scripts/xterm-webgl-atlas-overflow.live.test.cjs",
     "test:xterm-macos-selection": "electron scripts/xterm-macos-column-selection.live.test.cjs",
     "test:xterm-keyword-highlight-performance": "electron scripts/xterm-keyword-highlight-performance.live.test.cjs",
-    "test:xterm-keyword-highlight-throughput": "electron scripts/xterm-keyword-highlight-throughput.live.test.cjs"
+    "test:xterm-keyword-highlight-throughput": "electron scripts/xterm-keyword-highlight-throughput.live.test.cjs",
+    "pack:personal:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false NODE_OPTIONS=--disable-warning=DEP0190 electron-builder --config electron-builder.personal.config.cjs --mac --publish=never"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.956.0",
