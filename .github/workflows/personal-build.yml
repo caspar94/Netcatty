@@ -1,17 +1,14 @@
 name: personal-C1-packages
-
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
-
+    branches:
+      - main
+  workflow_dispatch: null
 concurrency:
   group: personal-packages-${{ github.ref }}
-  cancel-in-progress: true
-
+  cancel-in-progress: false
 permissions:
   contents: read
-
 jobs:
   macos:
     if: github.repository == 'caspar94/Netcatty' && github.ref == 'refs/heads/main'
@@ -20,7 +17,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     env:
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
       ET_BIN_OWNER: binaricat
       ET_BIN_REPO: Netcatty-et-bin
       GITHUB_TOKEN: ${{ github.token }}
@@ -47,15 +44,7 @@ jobs:
       - name: Lint
         run: npm run lint
       - name: Test personal performance changes and upstream chat features
-        run: >-
-          node --test --test-concurrency=2 --test-timeout=60000 --import tsx
-          components/ai/ChatMessageList.test.tsx
-          components/ai/aiMarkdownWarmup.test.ts
-          components/terminal/terminalFitFrameScheduler.test.ts
-          components/terminal/terminalSafeFitVisibility.test.ts
-          infrastructure/ai/harness/externalSdkStreaming.test.ts
-          electron/bridges/aiBridge/agentAuthProbes.test.cjs
-          electron/bridges/aiBridge.test.cjs
+        run: node --test --test-concurrency=2 --test-timeout=60000 --import tsx components/ai/ChatMessageList.test.tsx components/ai/aiMarkdownWarmup.test.ts components/terminal/terminalFitFrameScheduler.test.ts components/terminal/terminalSafeFitVisibility.test.ts infrastructure/ai/harness/externalSdkStreaming.test.ts electron/bridges/aiBridge/agentAuthProbes.test.cjs electron/bridges/aiBridge.test.cjs
       - name: Fetch verified bundled Mosh client
         run: npm run fetch:mosh -- --platform=darwin --arch=universal --resolve-release
       - name: Fetch verified bundled EternalTerminal client
@@ -78,9 +67,421 @@ jobs:
             release/personal/*.dmg
             release/personal/*.zip
             release/personal/SHA256SUMS
-
+  linux-x64:
+    name: build-linux-x64
+    if: github.repository == 'caspar94/Netcatty' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/almalinuxorg/almalinux:8
+    env:
+      npm_config_arch: x64
+      npm_config_target_arch: x64
+      LDFLAGS: -static-libstdc++ -static-libgcc
+      VITE_SYNC_GITHUB_CLIENT_ID: ${{ secrets.VITE_SYNC_GITHUB_CLIENT_ID }}
+      VITE_SYNC_GOOGLE_CLIENT_ID: ${{ secrets.VITE_SYNC_GOOGLE_CLIENT_ID }}
+      VITE_SYNC_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_SYNC_GOOGLE_CLIENT_SECRET }}
+      VITE_SYNC_ONEDRIVE_CLIENT_ID: ${{ secrets.VITE_SYNC_ONEDRIVE_CLIENT_ID }}
+      ET_BIN_OWNER: binaricat
+      ET_BIN_REPO: Netcatty-et-bin
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnf -y --setopt=retries=4 --setopt=timeout=30 install epel-release
+          dnf -y --setopt=retries=4 --setopt=timeout=30 install \
+            curl ca-certificates \
+            gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ make \
+            python3.11 python3.11-pip \
+            git file rpm-build binutils cpio elfutils \
+            libarchive gzip bzip2 xz zstd tar which findutils \
+            dpkg fakeroot \
+            fuse fuse-libs gtk3 nss libXScrnSaver libXtst alsa-lib \
+            at-spi2-atk libdrm mesa-libgbm libX11 libX11-xcb libxcb \
+            mesa-libGL pango cairo
+          # gcc-toolset-13: C++20 for Electron 42 natives; still links glibc 2.28.
+          GCC_TOOLSET_ROOT="/opt/rh/gcc-toolset-13/root"
+          echo "PATH=${GCC_TOOLSET_ROOT}/usr/bin:${PATH}" >> "${GITHUB_ENV}"
+          echo "CC=${GCC_TOOLSET_ROOT}/usr/bin/gcc" >> "${GITHUB_ENV}"
+          echo "CXX=${GCC_TOOLSET_ROOT}/usr/bin/g++" >> "${GITHUB_ENV}"
+          echo "DEVTOOLSET_ROOTPATH=${GCC_TOOLSET_ROOT}" >> "${GITHUB_ENV}"
+          export PATH="${GCC_TOOLSET_ROOT}/usr/bin:${PATH}"
+          gcc --version
+          g++ --version
+          # AlmaLinux 8's libarchive package is often library-only in minimal
+          # images (no /usr/bin/bsdtar). electron-builder pacman packaging needs
+          # bsdtar; pull a Debian tools package that runs on glibc 2.28.
+          # Prefer Buster (published as +deb10u1 on archive.debian.org).
+          if [[ ! -x /usr/bin/bsdtar ]]; then
+            echo "bsdtar missing; installing CLI from Debian libarchive-tools"
+            mkdir -p /tmp/bsdtar-deb
+            BSDTAR_DEB_URLS=(
+              "http://archive.debian.org/debian/pool/main/liba/libarchive/libarchive-tools_3.3.3-4+deb10u1_amd64.deb"
+              "http://archive.debian.org/debian/pool/main/liba/libarchive/libarchive-tools_3.2.2-2+deb9u2_amd64.deb"
+            )
+            BSDTAR_DEB_OK=0
+            for url in "${BSDTAR_DEB_URLS[@]}"; do
+              echo "trying ${url}"
+              if curl -fsSL --retry 4 --retry-connrefused --connect-timeout 20 --max-time 300 \
+                -o /tmp/libarchive-tools.deb "${url}"; then
+                BSDTAR_DEB_OK=1
+                break
+              fi
+              echo "download failed for ${url}"
+            done
+            if [[ "${BSDTAR_DEB_OK}" -ne 1 ]]; then
+              echo "::error::Could not download Debian libarchive-tools for bsdtar"
+              exit 1
+            fi
+            dpkg-deb -x /tmp/libarchive-tools.deb /tmp/bsdtar-deb
+            install -m 0755 /tmp/bsdtar-deb/usr/bin/bsdtar /usr/local/bin/bsdtar-bin
+            # Prefer system libarchive.so if present; fall back to the deb's.
+            if [[ ! -e /usr/lib64/libarchive.so.13 && -d /tmp/bsdtar-deb/usr/lib/x86_64-linux-gnu ]]; then
+              mkdir -p /usr/local/lib/bsdtar-libs
+              cp -a /tmp/bsdtar-deb/usr/lib/x86_64-linux-gnu/libarchive.so* /usr/local/lib/bsdtar-libs/ 2>/dev/null || true
+            fi
+            printf '%s\n' \
+              '#!/bin/bash' \
+              'unset LD_LIBRARY_PATH' \
+              'if [[ -d /usr/local/lib/bsdtar-libs ]]; then' \
+              '  export LD_LIBRARY_PATH=/usr/local/lib/bsdtar-libs' \
+              'fi' \
+              'exec /usr/local/bin/bsdtar-bin "$@"' \
+              > /usr/local/bin/bsdtar
+            chmod +x /usr/local/bin/bsdtar
+          fi
+          # Some fpm paths still look for xzmt even when payload compression
+          # is gzip; provide a multi-thread xz shim.
+          printf '%s\n' '#!/bin/sh' 'exec /usr/bin/xz -T0 "$@"' > /usr/local/bin/xzmt
+          chmod +x /usr/local/bin/xzmt
+          # electron-builder's portable fpm injects its own LD_LIBRARY_PATH.
+          # System tools (rpmbuild, bsdtar, ...) then exit 127 under that path.
+          # Wrap every packaging helper so child processes see a clean env.
+          # Use printf (not a bare heredoc): unindented heredoc body breaks GHA YAML.
+          wrap_clean_env() {
+            local name="$1"
+            local real=""
+            if [[ -x "/usr/bin/${name}" ]]; then
+              real="/usr/bin/${name}"
+            elif [[ -x "/usr/local/bin/${name}-bin" ]]; then
+              real="/usr/local/bin/${name}-bin"
+            elif command -v "${name}" >/dev/null 2>&1; then
+              real="$(command -v "${name}")"
+            else
+              return 0
+            fi
+            # Don't wrap our own wrapper recursively.
+            if [[ "${real}" == /usr/local/bin/* && "${name}" != "bsdtar" ]]; then
+              return 0
+            fi
+            if [[ "${name}" == "bsdtar" && -x /usr/local/bin/bsdtar-bin ]]; then
+              real="/usr/local/bin/bsdtar-bin"
+            fi
+            printf '%s\n' \
+              '#!/bin/bash' \
+              'unset LD_LIBRARY_PATH' \
+              "exec ${real} \"\$@\"" \
+              > "/usr/local/bin/${name}"
+            chmod +x "/usr/local/bin/${name}"
+          }
+          for cmd in rpmbuild bsdtar bsdcpio tar gzip xz strip cpio; do
+            wrap_clean_env "${cmd}"
+          done
+          # Re-apply bsdtar wrapper with optional lib path for the deb-extracted binary.
+          if [[ -x /usr/local/bin/bsdtar-bin ]]; then
+            printf '%s\n' \
+              '#!/bin/bash' \
+              'unset LD_LIBRARY_PATH' \
+              'if [[ -d /usr/local/lib/bsdtar-libs ]]; then' \
+              '  export LD_LIBRARY_PATH=/usr/local/lib/bsdtar-libs' \
+              'fi' \
+              'exec /usr/local/bin/bsdtar-bin "$@"' \
+              > /usr/local/bin/bsdtar
+            chmod +x /usr/local/bin/bsdtar
+          fi
+          # Fail early with diagnostics if packaging tools are missing.
+          for tool in rpmbuild bsdtar strip gzip xz xzmt; do
+            if ! command -v "${tool}" >/dev/null 2>&1; then
+              echo "::error::Required packaging tool not found: ${tool}"
+              ls -la /usr/bin/bsd* /usr/local/bin/bsd* 2>/dev/null || true
+              rpm -ql libarchive 2>/dev/null | head -n 40 || true
+              exit 1
+            fi
+            echo "found ${tool}: $(command -v "${tool}")"
+          done
+          rpmbuild --version
+          bsdtar --version | head -n 1
+          # Official Node 22 linux-x64 tarball (same major as other package jobs).
+          NODE_VERSION="$(curl -fsSL --retry 4 --retry-connrefused --connect-timeout 20 --max-time 300 \
+            https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt \
+            | awk '/node-v[0-9.]+-linux-x64\.tar\.xz$/{print $2; exit}' \
+            | sed -E 's/^node-(v[0-9.]+)-linux-x64\.tar\.xz$/\1/')"
+          if [[ -z "${NODE_VERSION}" ]]; then
+            echo "::error::Could not resolve latest Node 22 linux-x64 tarball version."
+            exit 1
+          fi
+          echo "Installing Node ${NODE_VERSION} from nodejs.org"
+          curl -fsSL --retry 4 --retry-connrefused --connect-timeout 20 --max-time 300 \
+            "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-x64.tar.xz" \
+            | tar -xJ -C /usr/local --strip-components=1
+          node -v
+          npm -v
+          # node-gyp 12 needs Python >=3.8; AlmaLinux 8 default is older.
+          alternatives --set python3 /usr/bin/python3.11 || ln -sfn /usr/bin/python3.11 /usr/local/bin/python3
+          python3 --version
+          echo "PYTHON=/usr/bin/python3.11" >> "${GITHUB_ENV}"
+          echo "npm_config_python=/usr/bin/python3.11" >> "${GITHUB_ENV}"
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Restore Electron download cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install deps
+        run: |
+          python3 --version
+          g++ --version
+          npm ci
+      - name: Set version
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./electron-builder.personal.config.cjs').extraMetadata.version")"
+          npm pkg set version="$VERSION"
+      - name: Prepare node-pty Linux runtime
+        env:
+          npm_config_arch: x64
+        run: bash scripts/ensure-node-pty-linux.sh prepare x64
+      - name: Fetch bundled mosh-client
+        run: |
+          npm run fetch:mosh -- --platform=linux --arch=x64 --resolve-release
+      - name: Fetch bundled et-client
+        run: |
+          npm run fetch:et -- --platform=linux --arch=x64 --resolve-release
+      - name: Build package
+        env:
+          npm_config_arch: x64
+          ELECTRON_BUILDER_PUBLISH: never
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          command -v node
+          command -v rpmbuild
+          command -v bsdtar
+          command -v gzip
+          command -v xzmt
+          for cmd in rpmbuild bsdtar; do
+            if ! head -n 2 "$(command -v "${cmd}")" | grep -q 'unset LD_LIBRARY_PATH'; then
+              echo "::warning::${cmd} on PATH is not the clean-env wrapper; packaging may fail with exit 127"
+            fi
+          done
+          npm run build
+          npx electron-builder --config electron-builder.personal.config.cjs --linux --x64 --publish=never
+      - name: Verify packaged node-pty Linux runtime
+        run: bash scripts/ensure-node-pty-linux.sh verify x64
+      - name: Verify packaged deb artifact
+        run: bash scripts/verify-linux-deb-artifact.sh amd64
+      - name: Verify packaged rpm artifact
+        run: bash scripts/verify-linux-rpm-artifact.sh x86_64
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: personal-linux-x64
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.pacman
+          if-no-files-found: error
+          retention-days: 30
+    timeout-minutes: 60
+  linux-arm64:
+    name: build-linux-arm64
+    if: github.repository == 'caspar94/Netcatty' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:bullseye
+    env:
+      npm_config_arch: arm64
+      npm_config_target_arch: arm64
+      VITE_SYNC_GITHUB_CLIENT_ID: ${{ secrets.VITE_SYNC_GITHUB_CLIENT_ID }}
+      VITE_SYNC_GOOGLE_CLIENT_ID: ${{ secrets.VITE_SYNC_GOOGLE_CLIENT_ID }}
+      VITE_SYNC_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_SYNC_GOOGLE_CLIENT_SECRET }}
+      VITE_SYNC_ONEDRIVE_CLIENT_ID: ${{ secrets.VITE_SYNC_ONEDRIVE_CLIENT_ID }}
+      ET_BIN_OWNER: binaricat
+      ET_BIN_REPO: Netcatty-et-bin
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Bullseye LTS ended on 2026-08-31; its security index is now frozen.
+          # Pin the final snapshot and waive expiry only for this archived source.
+          # APT still verifies its signature and every package's checksum.
+          sed -i '/ bullseye-security /d' /etc/apt/sources.list
+          printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260901T000000Z/ bullseye-security main\n' >> /etc/apt/sources.list
+          apt-get -o Acquire::Retries=4 update
+          apt-get -o Acquire::Retries=4 install -y curl build-essential python3 git libfuse2 file rpm \
+            libarchive-tools \
+            libglib2.0-0 libgtk-3-0 libnss3 libxss1 libxtst6 libasound2 \
+            libatk-bridge2.0-0 libdrm2 libgbm1 libx11-xcb1 libxcb-dri3-0
+          curl -fsSL --retry 4 --retry-all-errors --connect-timeout 20 --max-time 300 \
+            https://deb.nodesource.com/setup_22.x | bash -
+          apt-get -o Acquire::Retries=4 install -y nodejs
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Restore Electron download cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install deps
+        run: npm ci
+      - name: Set version
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./electron-builder.personal.config.cjs').extraMetadata.version")"
+          npm pkg set version="$VERSION"
+      - name: Prepare node-pty Linux runtime
+        env:
+          npm_config_arch: arm64
+        run: bash scripts/ensure-node-pty-linux.sh prepare arm64
+      - name: Fetch bundled mosh-client
+        run: |
+          npm run fetch:mosh -- --platform=linux --arch=arm64 --resolve-release
+      - name: Fetch bundled et-client
+        run: |
+          npm run fetch:et -- --platform=linux --arch=arm64 --resolve-release
+      - name: Build package
+        env:
+          npm_config_arch: arm64
+          ELECTRON_BUILDER_PUBLISH: never
+        run: |-
+          npm run build
+          npx electron-builder --config electron-builder.personal.config.cjs --linux --arm64 --publish=never
+      - name: Verify packaged node-pty Linux runtime
+        run: bash scripts/ensure-node-pty-linux.sh verify arm64
+      - name: Verify packaged deb artifact
+        run: bash scripts/verify-linux-deb-artifact.sh arm64
+      - name: Verify packaged rpm artifact
+        run: bash scripts/verify-linux-rpm-artifact.sh aarch64
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: personal-linux-arm64
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.pacman
+          if-no-files-found: error
+          retention-days: 30
+    timeout-minutes: 60
+  windows:
+    if: github.repository == 'caspar94/Netcatty' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      ET_BIN_OWNER: binaricat
+      ET_BIN_REPO: Netcatty-et-bin
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Set up MSVC developer command prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Restore Electron download cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/electron
+            ~/Library/Caches/electron
+            ~/AppData/Local/electron/Cache
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install deps
+        run: npm ci
+      - name: Compile ConPTY test helpers
+        shell: pwsh
+        run: |
+          $compiler = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $compiler)) { throw "csc.exe not found" }
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\netcatty-mosh-conpty" | Out-Null
+          & $compiler /nologo /target:exe /out:"$env:RUNNER_TEMP\netcatty-mosh-conpty\ssh.exe" electron\bridges\fixtures\mosh-conpty-fake-ssh.cs
+          if ($LASTEXITCODE -ne 0) { throw "failed to compile fake ssh" }
+          & $compiler /nologo /target:exe /out:"$env:RUNNER_TEMP\netcatty-mosh-conpty\mosh-client.exe" electron\bridges\fixtures\mosh-conpty-fake-client.cs
+          if ($LASTEXITCODE -ne 0) { throw "failed to compile fake mosh-client" }
+      - name: Test Mosh handshake through ConPTY
+        shell: pwsh
+        env:
+          NETCATTY_TEST_MOSH_SSH_EXE: ${{ runner.temp }}\netcatty-mosh-conpty\ssh.exe
+          NETCATTY_TEST_MOSH_CLIENT_EXE: ${{ runner.temp }}\netcatty-mosh-conpty\mosh-client.exe
+        run: |
+          node --test electron/bridges/moshHandshake.test.cjs
+          node electron/bridges/terminalBridge.moshConpty.integration.cjs
+      - name: Fetch bundled mosh-client
+        shell: bash
+        run: npm run fetch:mosh -- --platform=win32 --arch=x64 --resolve-release
+      - name: Fetch bundled et-client
+        shell: bash
+        run: npm run fetch:et -- --platform=win32 --arch=x64 --resolve-release
+      - name: Set version
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./electron-builder.personal.config.cjs').extraMetadata.version")"
+          npm pkg set version="$VERSION"
+      - name: Build package
+        env:
+          npm_config_arch: x64
+          ELECTRON_BUILDER_PUBLISH: never
+        run: |
+          npm run build:windows-hello-helper
+          npm run build
+          npx electron-builder --config electron-builder.personal.config.cjs --win --x64 --publish=never
+        shell: bash
+      - name: Test tray panel layout
+        run: npm run test:tray-panel-layout
+      - name: Test tray panel layout at 200% scale on Windows
+        env:
+          NETCATTY_TRAY_LAYOUT_SCALE: "2"
+        run: npm run test:tray-panel-layout
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: personal-windows-x64
+          path: |
+            release/*.exe
+            release/*.zip
+          if-no-files-found: error
+          retention-days: 30
   release:
-    needs: macos
+    needs:
+      - macos
+      - windows
+      - linux-x64
+      - linux-arm64
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -89,28 +490,17 @@ jobs:
       GH_REPO: ${{ github.repository }}
       PERSONAL_VERSION: ${{ needs.macos.outputs.version }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: personal-*
+          merge-multiple: true
+          path: packages
       - uses: actions/download-artifact@v8
         with:
           name: Netcatty-${{ needs.macos.outputs.version }}-macOS-${{ github.sha }}
           path: packages
-      - name: Publish a new personal version once
-        shell: bash
-        run: |
-          tag="v${PERSONAL_VERSION}"
-          if gh release view "$tag" --json tagName >/dev/null 2>&1; then
-            echo "Release ${tag} already exists; this commit's packages remain in Actions artifacts."
-            echo "Increment the C revision in electron-builder.personal.config.cjs to publish a new release."
-            exit 0
-          fi
-          cat > notes.md <<EOF_NOTES
-          Personal Netcatty ${PERSONAL_VERSION}, built by GitHub Actions from commit ${GITHUB_SHA}.
-
-          Includes the local terminal, tab-switching, AI rendering, streaming, and asynchronous authentication optimizations.
-
-          Downloads: arm64 for Apple Silicon; x64 for Intel Macs. These packages use an ad-hoc signature and are not Apple-notarized.
-
-          Subsequent commits with the same version generate Actions artifacts. Increment C1 to C2 to publish the next version.
-          EOF_NOTES
-          gh release create "$tag" packages/*.dmg packages/*.zip packages/SHA256SUMS \
-            --repo "$GH_REPO" --target "$GITHUB_SHA" \
-            --title "Netcatty ${PERSONAL_VERSION}" --notes-file notes.md --prerelease
+      - name: Publish new versions or add missing platform packages
+        run: node scripts/publish-personal-release.cjs packages

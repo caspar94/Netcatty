@@ -8,7 +8,7 @@ module.exports = {
         version: '1.1.84-C1',
         homepage: 'https://github.com/caspar94/Netcatty',
     },
-    directories: { ...base.directories, output: 'release/personal' },
+    directories: { ...base.directories, output: process.platform === 'darwin' ? 'release/personal' : 'release' },
     mac: { ...base.mac, identity: null, notarize: false },
     publish: [{ provider: 'github', owner: 'caspar94', repo: 'Netcatty', releaseType: 'release' }],
 };

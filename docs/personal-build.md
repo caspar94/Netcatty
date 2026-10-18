@@ -77,23 +77,30 @@ The last three commands require Electron and a graphical macOS session.
 
 ## GitHub cloud builds and Releases
 
-The `personal-C1-packages` workflow runs automatically on pushes to this fork's
-`main` branch and can also be run manually from Actions. It installs the lockfile,
-builds test prerequisites, runs lint and focused regressions, fetches verified
-Mosh and EternalTerminal binaries from the upstream binary repositories, and
-builds both macOS architectures. Packages and SHA256SUMS are retained as Actions
-artifacts for 30 days, identified by version and source commit.
+The `personal-C1-packages` workflow runs on pushes to this fork's `main` and
+supports manual runs from Actions. It builds macOS Intel/Apple Silicon,
+Windows x64 (installer, portable EXE, ZIP), and Linux x64/arm64 (AppImage, DEB,
+RPM, pacman). Verified Mosh and EternalTerminal clients come from upstream
+binary repositories. Each platform uploads Actions artifacts for 30 days.
 
-The first successful cloud build of a new personal version creates a prerelease
-such as `v1.1.84-C1` with DMG and ZIP downloads. Existing version releases are
-immutable: later commits with the same version only generate Actions artifacts.
-Increment `extraMetadata.version` in `electron-builder.personal.config.cjs` to
-`1.1.84-C2` (or a new upstream version with `-C1`) to publish another release.
+Linux builds reuse the upstream AlmaLinux 8 x64 and Debian Bullseye arm64
+jobs, including their compiler, packaging helpers, native-module checks,
+and DEB/RPM verification. Non-macOS outputs use `release/` so those upstream
+verification scripts retain their expected layout; macOS uses `release/personal/`.
 
-This fork uses the personal macOS workflow in place of the upstream generic
-`build-packages` workflow, which is disabled in this fork's Actions settings to
-avoid duplicate package builds. The upstream workflow file is preserved and can
-be re-enabled if Windows/Linux or official-style packaging is wanted. The
-upstream full test workflow remains enabled independently; the known SFTP
-pause/resume timeout is documented above. Cloud build failures prevent release
-publication. Upstream version synchronization is a separate, unconfigured step.
+The first successful build of a new personal version creates a prerelease such
+as `v1.1.84-C1`. Later runs preserve all existing installers and the version tag.
+Missing platform packages can be added only when application source still
+matches that tag; workflow/config/documentation changes are allowed. The
+publisher merges checksums with the existing manifest and never replaces an
+existing installer. Release notes record the additional platform build commit.
+
+Once all platforms exist, subsequent same-version commits generate Actions
+artifacts only. Increment `extraMetadata.version` in the personal builder config
+to `1.1.84-C2` (or a new upstream version with `-C1`) to release application changes.
+Package jobs must all pass before publication. The workflow serializes runs to
+avoid interrupting release uploads. The upstream generic package workflow remains
+disabled in this fork to avoid duplicate builds; its source is preserved. The
+upstream full test workflow remains enabled independently, with the known SFTP
+pause/resume timeout documented above. Automatic upstream synchronization is not
+configured.
