@@ -74,3 +74,26 @@ The last three commands require Electron and a graphical macOS session.
   running for 15 seconds, and exited cleanly. Apple Silicon was cross-built
   and its binary architecture checked; it was not launched on this Intel host.
 - SHA-256 checksums are available in `release/personal/SHA256SUMS`.
+
+## GitHub cloud builds and Releases
+
+The `personal-C1-packages` workflow runs automatically on pushes to this fork's
+`main` branch and can also be run manually from Actions. It installs the lockfile,
+builds test prerequisites, runs lint and focused regressions, fetches verified
+Mosh and EternalTerminal binaries from the upstream binary repositories, and
+builds both macOS architectures. Packages and SHA256SUMS are retained as Actions
+artifacts for 30 days, identified by version and source commit.
+
+The first successful cloud build of a new personal version creates a prerelease
+such as `v1.1.84-C1` with DMG and ZIP downloads. Existing version releases are
+immutable: later commits with the same version only generate Actions artifacts.
+Increment `extraMetadata.version` in `electron-builder.personal.config.cjs` to
+`1.1.84-C2` (or a new upstream version with `-C1`) to publish another release.
+
+This fork uses the personal macOS workflow in place of the upstream generic
+`build-packages` workflow, which is disabled in this fork's Actions settings to
+avoid duplicate package builds. The upstream workflow file is preserved and can
+be re-enabled if Windows/Linux or official-style packaging is wanted. The
+upstream full test workflow remains enabled independently; the known SFTP
+pause/resume timeout is documented above. Cloud build failures prevent release
+publication. Upstream version synchronization is a separate, unconfigured step.

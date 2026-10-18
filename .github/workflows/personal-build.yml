@@ -1,0 +1,116 @@
+name: personal-C1-packages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: personal-packages-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    if: github.repository == 'caspar94/Netcatty' && github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      ET_BIN_OWNER: binaricat
+      ET_BIN_REPO: Netcatty-et-bin
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Read personal version
+        id: version
+        shell: bash
+        run: |
+          node --input-type=commonjs <<'JS'
+          const fs = require('node:fs');
+          const version = require('./electron-builder.personal.config.cjs').extraMetadata.version;
+          if (!/^\d+\.\d+\.\d+-C[1-9]\d*$/.test(version)) throw new Error('Expected a personal version such as 1.1.84-C1');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          JS
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build test prerequisites and verify SDK contract
+        run: npm run pretest
+      - name: Lint
+        run: npm run lint
+      - name: Test personal performance changes and upstream chat features
+        run: >-
+          node --test --test-concurrency=2 --test-timeout=60000 --import tsx
+          components/ai/ChatMessageList.test.tsx
+          components/ai/aiMarkdownWarmup.test.ts
+          components/terminal/terminalFitFrameScheduler.test.ts
+          components/terminal/terminalSafeFitVisibility.test.ts
+          infrastructure/ai/harness/externalSdkStreaming.test.ts
+          electron/bridges/aiBridge/agentAuthProbes.test.cjs
+          electron/bridges/aiBridge.test.cjs
+      - name: Fetch verified bundled Mosh client
+        run: npm run fetch:mosh -- --platform=darwin --arch=universal --resolve-release
+      - name: Fetch verified bundled EternalTerminal client
+        run: npm run fetch:et -- --platform=darwin --arch=universal --resolve-release
+      - name: Build Intel and Apple Silicon packages
+        run: npm run pack:personal:mac
+      - name: Verify disk images and write checksums
+        shell: bash
+        run: |
+          for image in release/personal/*.dmg; do hdiutil verify "$image"; done
+          cd release/personal
+          shasum -a 256 *.dmg *.zip > SHA256SUMS
+      - name: Upload installable packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: Netcatty-${{ steps.version.outputs.version }}-macOS-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            release/personal/*.dmg
+            release/personal/*.zip
+            release/personal/SHA256SUMS
+
+  release:
+    needs: macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PERSONAL_VERSION: ${{ needs.macos.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: Netcatty-${{ needs.macos.outputs.version }}-macOS-${{ github.sha }}
+          path: packages
+      - name: Publish a new personal version once
+        shell: bash
+        run: |
+          tag="v${PERSONAL_VERSION}"
+          if gh release view "$tag" --json tagName >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; this commit's packages remain in Actions artifacts."
+            echo "Increment the C revision in electron-builder.personal.config.cjs to publish a new release."
+            exit 0
+          fi
+          cat > notes.md <<EOF_NOTES
+          Personal Netcatty ${PERSONAL_VERSION}, built by GitHub Actions from commit ${GITHUB_SHA}.
+
+          Includes the local terminal, tab-switching, AI rendering, streaming, and asynchronous authentication optimizations.
+
+          Downloads: arm64 for Apple Silicon; x64 for Intel Macs. These packages use an ad-hoc signature and are not Apple-notarized.
+
+          Subsequent commits with the same version generate Actions artifacts. Increment C1 to C2 to publish the next version.
+          EOF_NOTES
+          gh release create "$tag" packages/*.dmg packages/*.zip packages/SHA256SUMS \
+            --repo "$GH_REPO" --target "$GITHUB_SHA" \
+            --title "Netcatty ${PERSONAL_VERSION}" --notes-file notes.md --prerelease
