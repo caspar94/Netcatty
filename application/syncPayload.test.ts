@@ -1,3 +1,4 @@
+import { installBrowserLockFixture } from "./testSupport/browserLockFixture";
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -37,6 +38,8 @@ function installLocalStorage(): LocalStorageMock {
   });
   return localStorage;
 }
+
+installBrowserLockFixture();
 
 const localStorage = installLocalStorage();
 const {
@@ -1420,6 +1423,26 @@ test("hasCloudSyncEntityData ignores settings-only payloads for empty-vault reco
   );
 });
 
+test("surviving browser bookmarks do not suppress empty-vault recovery", () => {
+  const local: SyncPayload = {
+    ...vault([]), syncedAt: 1,
+    browserBookmarks: [{
+      id: "app", title: "App", url: "https://app.example.com/", scope: "all-hosts",
+      hostId: null, icon: "A", color: "#247969", order: 0, createdAt: 1, updatedAt: 1,
+    }],
+  };
+  assert.equal(hasMeaningfulCloudSyncData(local), true, "bookmarks must remain syncable");
+  assert.equal(hasCloudSyncEntityData(local), false);
+  const host = {
+    id: "remote", label: "Remote", hostname: "remote.example.com", username: "test",
+    port: 22, protocol: "ssh" as const, tags: [], os: "linux" as const,
+  };
+  for (const hosts of [[host], [host, { ...host, id: "second" }]]) {
+    assert.equal(shouldPromptCloudVaultRecovery(local, { ...vault([]), hosts, syncedAt: 2 }), true);
+  }
+  assert.equal(shouldPromptCloudVaultRecovery({ ...vault([]), syncedAt: 1 }, local), false);
+});
+
 test("shouldPromptCloudVaultRecovery ignores settings-only remote payloads", () => {
   const settingsOnlyPayload: SyncPayload = {
     hosts: [],
@@ -1665,6 +1688,50 @@ test("terminal auto-close preference survives sync round-trip", async () => {
 
   const restored = JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_TERM_SETTINGS)!);
   assert.equal(restored.autoCloseOnExit, false);
+});
+
+test("inbound sync does not resurrect the materialized auto-close default after the marker", async () => {
+  localStorage.setItem(storageKeys.STORAGE_KEY_TERM_AUTO_CLOSE_EXIT_MIGRATED, "true");
+  try {
+    localStorage.setItem(
+      storageKeys.STORAGE_KEY_TERM_SETTINGS,
+      JSON.stringify({ autoCloseOnExit: false, scrollback: 3000 }),
+    );
+
+    await applySyncPayload({
+      hosts: [],
+      keys: [],
+      identities: [],
+      snippets: [],
+      customGroups: [],
+      syncedAt: 1,
+      settings: { terminalSettings: { autoCloseOnExit: true } },
+    }, { importVaultData: () => {} });
+
+    const resurrected = JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_TERM_SETTINGS)!);
+    assert.equal(resurrected.autoCloseOnExit, false);
+    assert.equal(resurrected.scrollback, 3000);
+
+    // An explicit opt-in made after the migration round-trips with a marker.
+    localStorage.setItem(
+      storageKeys.STORAGE_KEY_TERM_SETTINGS,
+      JSON.stringify({ autoCloseOnExit: true, scrollback: 3000 }),
+    );
+    const optedIn = buildSyncPayload(vault());
+    assert.equal(optedIn.settings?.autoCloseOnExitDefaultMigrated, true);
+    assert.equal(optedIn.settings?.terminalSettings?.autoCloseOnExit, true);
+
+    localStorage.setItem(
+      storageKeys.STORAGE_KEY_TERM_SETTINGS,
+      JSON.stringify({ autoCloseOnExit: false, scrollback: 3000 }),
+    );
+    await applySyncPayload(optedIn, { importVaultData: () => {} });
+    const restoredChoice = JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_TERM_SETTINGS)!);
+    assert.equal(restoredChoice.autoCloseOnExit, true);
+    assert.equal(localStorage.getItem(storageKeys.STORAGE_KEY_TERM_AUTO_CLOSE_EXIT_MIGRATED), "true");
+  } finally {
+    localStorage.removeItem(storageKeys.STORAGE_KEY_TERM_AUTO_CLOSE_EXIT_MIGRATED);
+  }
 });
 
 test("terminal disconnected notice preference survives sync round-trip", async () => {

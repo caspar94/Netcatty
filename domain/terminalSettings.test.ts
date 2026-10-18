@@ -185,16 +185,16 @@ test("normalizeTerminalSettings preserves disabled font ligatures", () => {
   assert.equal(normalizeTerminalSettings({ fontLigatures: false }).fontLigatures, false);
 });
 
-test("normalizeTerminalSettings enables terminal auto-close by default", () => {
-  assert.equal(normalizeTerminalSettings().autoCloseOnExit, true);
+test("normalizeTerminalSettings disables terminal auto-close by default", () => {
+  assert.equal(normalizeTerminalSettings().autoCloseOnExit, false);
 });
 
 test("normalizeTerminalSettings preserves disabled terminal auto-close", () => {
   assert.equal(normalizeTerminalSettings({ autoCloseOnExit: false }).autoCloseOnExit, false);
 });
 
-test("normalizeTerminalSettings disables SSH auto reconnect by default", () => {
-  assert.equal(normalizeTerminalSettings().sshAutoReconnectEnabled, false);
+test("normalizeTerminalSettings enables SSH auto reconnect by default", () => {
+  assert.equal(normalizeTerminalSettings().sshAutoReconnectEnabled, true);
 });
 
 test("normalizeTerminalSettings preserves explicit SSH auto reconnect settings", () => {
@@ -318,6 +318,11 @@ test("normalizeTerminalSettings preserves intentional custom autocompleteMaxSugg
     normalizeTerminalSettings({ autocompleteMaxSuggestions: 20 }).autocompleteMaxSuggestions,
     20,
   );
+});
+
+test("terminal links default to Netcatty and preserve the system browser choice", () => {
+  assert.equal(normalizeTerminalSettings().linkBrowser, 'netcatty');
+  assert.equal(normalizeTerminalSettings({ linkBrowser: 'system' }).linkBrowser, 'system');
 });
 
 test("normalizeTerminalSettings keeps multi-line paste confirmation opt-in", () => {

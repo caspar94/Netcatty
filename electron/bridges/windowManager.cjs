@@ -76,6 +76,9 @@ const DEFAULT_WINDOW_WIDTH = 1400;
 const DEFAULT_WINDOW_HEIGHT = 900;
 // Minimum window size: enough to render the expanded sidebar + a usable
 // host list + the 420px host details / new-host aside panel without overflow.
+// Small displays shrink this fit to their work area at window-creation time
+// (see resolveWindowMinimumSize in windowManager/mainWindow.cjs, #3647);
+// the minimum tracks the display the window currently occupies.
 const MIN_WINDOW_WIDTH = 1100;
 const MIN_WINDOW_HEIGHT = 640;
 
@@ -411,7 +414,7 @@ function applyWindowOpacityToWindow(win) {
 
 function applyWindowOpacity(opacity) {
   currentWindowOpacity = clampWindowOpacity(opacity);
-  forEachMainWindow(applyWindowOpacityToWindow);
+  for (const win of getAppContentWindowList()) applyWindowOpacityToWindow(win);
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     applyWindowOpacityToWindow(settingsWindow);
   }
@@ -1279,11 +1282,24 @@ function registerWindowHandlers(ipcMain, nativeTheme) {
     // Notify all windows except the sender
     // Check both isDestroyed() and webContents.isDestroyed() to handle HMR refresh
     try {
-      forEachMainWindow((win) => {
-        if (!win.webContents.isDestroyed() && win.webContents.id !== senderId) {
-          win.webContents.send("netcatty:settings:changed", payload);
+      const sharedWindowSetting = [
+        "netcatty_window_opacity_v1",
+        "netcatty_hotkey_scheme_v1",
+        "netcatty_custom_key_bindings_v1",
+        "netcatty_hotkey_recording_v1",
+      ].includes(payload?.key);
+      const windows = sharedWindowSetting
+        ? getAppContentWindowList()
+        : getMainWindowList();
+      for (const win of windows) {
+        try {
+          if (!win.webContents.isDestroyed() && win.webContents.id !== senderId) {
+            win.webContents.send("netcatty:settings:changed", payload);
+          }
+        } catch {
+          // A closing/reloading recipient must not block the remaining windows.
         }
-      });
+      }
       if (settingsWindow && !settingsWindow.isDestroyed() && !settingsWindow.webContents.isDestroyed() && settingsWindow.webContents.id !== senderId) {
         settingsWindow.webContents.send("netcatty:settings:changed", payload);
       }

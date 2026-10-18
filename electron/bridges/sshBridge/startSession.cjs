@@ -27,6 +27,11 @@ const {
   annotateMacLocalNetworkErrorMessage,
   resolveFirstTcpEndpoint,
 } = require("../macLocalNetworkAccess.cjs");
+const {
+  buildRemoteShellExitPayload,
+  normalizeRemoteExitSignal,
+} = require("./remoteShellExit.cjs");
+const { looksLikeSkOpenSshMaterial } = require("../sshAuthHelper.cjs");
 
 const SSH_TCP_CONNECT_TIMEOUT_MS = 20000;
 const SSH_AUTH_READY_TIMEOUT_MS = 120000;
@@ -64,6 +69,9 @@ function unregisterTestConnectionTransport(sessionId) {
 }
 
 function cancelTestConnection(sessionId) {
+  require("../keyboardInteractiveHandler.cjs").cancelRequestsForSession(sessionId);
+  require("../passphraseHandler.cjs").cancelPassphraseRequestsForSession(sessionId);
+  require("../hostKeyVerifier.cjs").cancelRequestsForSession(sessionId);
   const transport = testConnectionTransports.get(sessionId);
   if (!transport) return { success: false, error: "Test connection not found" };
   const end = (item) => {
@@ -163,6 +171,9 @@ function hasSelectedAgentIdentity(options) {
 
 function shouldOfferAgentForLogin(options, connectOpts) {
   const selectedMethod = options?.authMethod;
+  // Path/inline sk-* detection may set useFidoAgent after prepare; honor it for
+  // login auth even when the renderer still sent useSshAgent:false.
+  const forceFidoAgent = options?.useFidoAgent === true && selectedMethod !== "password";
   const hasRestrictedSelectedAgent = selectedMethod === "key"
     && options?.useSshAgent === true
     && options?.identitiesOnly === true
@@ -170,8 +181,8 @@ function shouldOfferAgentForLogin(options, connectOpts) {
   const isStrictMethod = selectedMethod === "password"
     || selectedMethod === "key"
     || selectedMethod === "certificate";
-  return (!isStrictMethod || hasRestrictedSelectedAgent)
-    && options?.useSshAgent !== false
+  return (!isStrictMethod || hasRestrictedSelectedAgent || forceFidoAgent)
+    && (options?.useSshAgent !== false || forceFidoAgent)
     && Boolean(connectOpts?.agent);
 }
 
@@ -544,6 +555,15 @@ function createStartSessionApi(ctx) {
             ),
           });
         },
+        // Upload progress tracks bytes the transport actually accepted instead
+        // of bytes queued (issue #3663): ssh2 keeps writableLength unchanged
+        // until one queued write fully completes but shrinks _chunk as the
+        // channel window opens, so summing both approximates the outstanding
+        // backlog while it drains. Without this, an rz progress bar freezes
+        // mid-file for as long as the channel window takes to flush.
+        getTransportPendingBytes() {
+          return (Number(stream.writableLength) || 0) + (stream._chunk?.length || 0);
+        },
         interruptRemote() {
           try { stream.signal?.("INT"); } catch { /* ignore */ }
         },
@@ -665,7 +685,8 @@ function createStartSessionApi(ctx) {
       // "close" fires whenever the channel closes (could be network drop).
       // Only treat it as user-initiated exit if "exit" fired with a numeric
       // code and no signal. Signal terminations (e.g. server kill, idle
-      // timeout) have code=null and signal set — those are not user exits.
+      // timeout) have code=null and signal set — those are not user exits
+      // and are reported as "signaled", not the reconnectable "closed".
       // A third case exists: a remote that closes the channel without sending
       // exit-status or exit-signal never fires "exit" at all (#3591). The
       // initial values below stay null in that case and must not be reported
@@ -676,8 +697,17 @@ function createStartSessionApi(ctx) {
       stream.on("exit", (code, signal) => {
         log("shell exit", { sessionId, hostname: options.hostname, code, signal, reused: !!isReused });
         streamExitCode = typeof code === "number" ? code : null;
-        streamExitSignal = typeof signal === "string" && signal ? signal : null;
+        streamExitSignal = normalizeRemoteExitSignal(signal);
         streamExited = typeof code === "number" && !streamExitSignal;
+        // conn "close" can win the race against this channel's paced
+        // finalize. Stamp the signal so that path can still tell an
+        // administrative exit-signal from a transport drop.
+        if (streamExitSignal && sessions.get(sessionId) === session) {
+          session._remoteExitSignal = streamExitSignal;
+        }
+        if (streamExited && sessions.get(sessionId) === session) {
+          session._remoteExitCode = streamExitCode;
+        }
       });
 
       let closeFinalized = false;
@@ -686,6 +716,7 @@ function createStartSessionApi(ctx) {
           sessionId,
           hostname: options.hostname,
           streamExitCode,
+          streamExitSignal,
           streamExited,
           reused: !!isReused,
           transportError: sessions.get(sessionId)?._transportError,
@@ -717,27 +748,20 @@ function createStartSessionApi(ctx) {
                 _terminalSessionGeneration: liveSession?._terminalSessionGeneration,
               });
             } else {
-              // A shell TMOUT auto-logout is a clean exit (numeric code, no
-              // signal) — identical to a user-typed `exit` by code/signal —
-              // so detect it via the banner the shell prints just before
-              // exiting and report it as a timeout. That keeps the tab open
-              // for reconnect instead of auto-closing it (#1062 / #977).
+              // TMOUT auto-logout is a clean exit (numeric code, no signal) and
+              // is reported as "timeout" via the shell banner (#1062 / #977).
+              // An exit-signal is a separate administrative kick ("signaled").
+              // A channel close with neither exit-status nor exit-signal stays
+              // "closed" and must not be reported as code 0 (#3591).
               const idleTimedOut = streamExited && looksLikeIdleAutoLogout(liveSession?._promptTrackTail);
-              const reason = idleTimedOut ? "timeout" : (streamExited ? "exited" : "closed");
-              const exitPayload = {
+              const exitPayload = buildRemoteShellExitPayload({
                 sessionId,
-                reason,
-                _terminalSessionGeneration: liveSession?._terminalSessionGeneration,
-              };
-              // Report only exit facts the remote actually sent (#3591). When
-              // the peer closed the channel without exit-status/exit-signal,
-              // there is no code to show — flag it instead so the renderer can
-              // distinguish an abnormal teardown from a user-typed `exit 0`.
-              if (typeof streamExitCode === "number") {
-                exitPayload.exitCode = streamExitCode;
-              } else if (streamExitSignal === null) {
-                exitPayload.remoteClosedWithoutExitStatus = true;
-              }
+                generation: liveSession?._terminalSessionGeneration,
+                exitCode: streamExitCode,
+                exitSignal: streamExitSignal,
+                shellExited: streamExited,
+                idleTimedOut,
+              });
               safeSendSessionExit({ safeSend, electronModule, sessions }, contents, sessionId, exitPayload);
             }
             liveSession?.zmodemSentry?.cancel();
@@ -1288,7 +1312,8 @@ function createStartSessionApi(ctx) {
 
     async function startSSHSession(event, options) {
       const sessionId = options.sessionId || randomUUID();
-      const testMode = options.testMode === true;
+      const monitorMode = options._monitorMode === true;
+      const testMode = options.testMode === true || monitorMode;
       const sender = event.sender;
       const log = createSshDiagnosticLogger(
         !!options.sshDebugLogEnabled || process.env.NETCATTY_SSH_DEBUG === "1",
@@ -1589,8 +1614,69 @@ function createStartSessionApi(ctx) {
         });
 
         let authAgent = null;
-        const systemAuthAgent = shouldPrepareSystemAgentForLogin(options)
-          ? await prepareSystemSshAgentForAuth(options, "[SSH]")
+        // FIDO2 sk-* handles cannot be used as ssh2 software privateKeys.
+        // Detect only from key material (public/private text), not path names —
+        // path heuristics false-positive soft keys like id_mask.
+        let isFidoSkAuth = looksLikeSkOpenSshMaterial(options.privateKey)
+          || (Array.isArray(options.agentPublicKeys)
+            && options.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)))
+          || options.useFidoAgent === true;
+        // Path-only IdentityFile / reference keys may omit inline material and
+        // still be sk-* on disk — peek before choosing software-key auth.
+        if (!isFidoSkAuth && options.authMethod !== "password"
+          && Array.isArray(options.identityFilePaths)
+          && options.identityFilePaths.length > 0) {
+          try {
+            const { identityFilesLookLikeSk } = require("../sshAuthHelper.cjs");
+            isFidoSkAuth = await identityFilesLookLikeSk(options.identityFilePaths);
+          } catch {
+            // ignore probe failures; fall through to soft-key path
+          }
+        }
+        const forceSystemAgentForFido = isFidoSkAuth && options.authMethod !== "password";
+        // Propagate detected FIDO state onto options so shouldOfferAgentForLogin
+        // (and later auth decisions) see the same agent intent as preparation.
+        // Path-only IdentityFile SK picks often arrive with useSshAgent:false.
+        if (forceSystemAgentForFido) {
+          options.useSshAgent = true;
+          options.useFidoAgent = true;
+          options.identitiesOnly = options.identitiesOnly === true
+            || Boolean(
+              (Array.isArray(options.agentPublicKeys) && options.agentPublicKeys.length)
+              || (Array.isArray(options.identityFilePaths) && options.identityFilePaths.length),
+            );
+          options.addKeysToAgent = options.addKeysToAgent || "yes";
+          options.loadIdentityFilesIntoAgent = true;
+        }
+        const systemAuthAgent = (shouldPrepareSystemAgentForLogin(options) || forceSystemAgentForFido)
+          ? await prepareSystemSshAgentForAuth({
+            ...options,
+            // Only force the agent path when the caller already opted in or the
+            // key material requires hardware signing (FIDO). Automatic/password
+            // modes reach here via shouldPrepareSystemAgentForLogin's opportunistic
+            // check too; forcing useSshAgent:true unconditionally would make a
+            // missing system agent a hard failure for every "auto" connection
+            // instead of the no-op prepareSystemSshAgentForAuth already provides
+            // via its own useSshAgent !== true guard.
+            useSshAgent: options.useSshAgent === true || forceSystemAgentForFido,
+            useFidoAgent: forceSystemAgentForFido || options.useFidoAgent === true,
+            // Prefer loading the sk handle; keep identitiesOnly when a public
+            // key selector is available.
+            identitiesOnly: options.identitiesOnly === true
+              || (forceSystemAgentForFido && Boolean(
+                (Array.isArray(options.agentPublicKeys) && options.agentPublicKeys.length)
+                || (Array.isArray(options.identityFilePaths) && options.identityFilePaths.length),
+              )),
+            addKeysToAgent: options.addKeysToAgent || (forceSystemAgentForFido ? "yes" : options.addKeysToAgent),
+            loadIdentityFilesIntoAgent: forceSystemAgentForFido || options.loadIdentityFilesIntoAgent,
+            resolveWebContents: () => {
+              try {
+                return sender && !sender.isDestroyed?.() ? sender : null;
+              } catch {
+                return null;
+              }
+            },
+          }, "[SSH]")
           : null;
         // Kick off the default-key scan now so it overlaps the identity-file /
         // inline-key preparation below instead of running serially after it.
@@ -1622,7 +1708,10 @@ function createStartSessionApi(ctx) {
             },
           })
           : null;
-        const inlineKey = options.authMethod !== "password" && options.privateKey && !systemAuthAgent
+        const inlineKey = options.authMethod !== "password"
+          && options.privateKey
+          && !systemAuthAgent
+          && !looksLikeSkOpenSshMaterial(options.privateKey)
           ? await preparePrivateKeyForAuth({
             sender,
             privateKey: options.privateKey,
@@ -1647,9 +1736,12 @@ function createStartSessionApi(ctx) {
 
         if (systemAuthAgent) {
           connectOpts.agent = systemAuthAgent;
+          require("../attachFidoAgentRelease.cjs").attachFidoAgentRelease(conn, systemAuthAgent);
         }
 
-        if (hasCertificate) {
+        // Soft-key certificates use NetcattyAgent local signing. FIDO SK + cert
+        // must keep the system/owned agent (hardware signs via ssh-sk-helper).
+        if (hasCertificate && !forceSystemAgentForFido) {
           authAgent = new NetcattyAgent({
             mode: "certificate",
             webContents: event.sender,
@@ -1661,7 +1753,7 @@ function createStartSessionApi(ctx) {
             },
           });
           connectOpts.agent = authAgent;
-        } else if (effectivePrivateKey) {
+        } else if (effectivePrivateKey && !forceSystemAgentForFido) {
           connectOpts.privateKey = effectivePrivateKey;
           if (effectiveIdentityPassphrase) {
             connectOpts.passphrase = effectiveIdentityPassphrase;
@@ -2338,6 +2430,14 @@ function createStartSessionApi(ctx) {
               // auth-method cache write above is intentionally kept so a
               // successful test warms the same cache a real connection uses.
               clearAuthReadyTimer();
+              if (monitorMode) {
+                const { createTransport } = require("../sshConnectionPool.cjs");
+                connRef = createTransport({ conn, chainConnections, endpoint: reuseEndpoint });
+                unregisterTestConnectionTransport(sessionId);
+                settled = true;
+                resolve({ transport: connRef });
+                return;
+              }
               sendConnectionTestResult(sender, sessionId, true);
               settled = true;
               try { conn.end(); } catch { /* ignore */ }
@@ -2464,6 +2564,16 @@ function createStartSessionApi(ctx) {
           });
 
           conn.on("error", (err) => {
+            // ssh2 reports agent failures before trying the next auth method.
+            // Keep the connection and its authentication deadline alive.
+            if (err.level === "agent" && err.code !== "ERR_FIDO_CANCELLED") {
+              log("non-fatal agent auth error (will try next method)", {
+                sessionId,
+                hostname: options.hostname,
+                error: err.message,
+              });
+              return;
+            }
             clearAuthReadyTimer();
             // After the promise is settled, we can't reject again. But if the
             // session was already established (resolved), we still need to notify
@@ -2566,7 +2676,7 @@ function createStartSessionApi(ctx) {
             // Destroy the connection to prevent further socket errors from leaking
             // as uncaught exceptions (e.g. ECONNRESET on embedded devices).
             try { conn.destroy(); } catch { }
-            if (testMode) {
+            if (testMode && !monitorMode) {
               sendConnectionTestResult(sender, sessionId, false, visibleError);
             }
             settled = true;
@@ -2597,7 +2707,7 @@ function createStartSessionApi(ctx) {
             sessionDecoders.delete(sessionId);
             teardownTransport();
             try { conn.destroy(); } catch { }
-            if (testMode) {
+            if (testMode && !monitorMode) {
               sendConnectionTestResult(sender, sessionId, false, err.message);
             }
             settled = true;
@@ -2638,13 +2748,28 @@ function createStartSessionApi(ctx) {
                   reason: "error",
                   _terminalSessionGeneration: session?._terminalSessionGeneration,
                 });
-              } else {
-                safeSendSessionExit({ safeSend, electronModule, sessions }, contents, sessionId, {
+              } else if (normalizeRemoteExitSignal(session?._remoteExitSignal)) {
+                // The shell already reported an exit-signal. This connection
+                // close is the server finishing that administrative kick, not
+                // a transport flap — keep it out of the reconnect loop.
+                safeSendSessionExit({ safeSend, electronModule, sessions }, contents, sessionId, buildRemoteShellExitPayload({
                   sessionId,
-                  exitCode: 0,
-                  reason: "closed",
-                  _terminalSessionGeneration: session?._terminalSessionGeneration,
-                });
+                  generation: session?._terminalSessionGeneration,
+                  exitSignal: session._remoteExitSignal,
+                  shellExited: false,
+                  idleTimedOut: false,
+                }));
+              } else {
+                // Preserve a shell status already received before transport
+                // close; otherwise do not invent a successful exit code.
+                const shellExited = typeof session?._remoteExitCode === "number";
+                safeSendSessionExit({ safeSend, electronModule, sessions }, contents, sessionId, buildRemoteShellExitPayload({
+                  sessionId,
+                  generation: session?._terminalSessionGeneration,
+                  exitCode: session?._remoteExitCode,
+                  shellExited,
+                  idleTimedOut: shellExited && looksLikeIdleAutoLogout(session?._promptTrackTail),
+                }));
               }
               // Use this connection's captured token so a late close from an
               // old transport can't stop a newer same-sessionId stream (#916).
@@ -2669,7 +2794,7 @@ function createStartSessionApi(ctx) {
               }
             }
             if (!settled) {
-              if (testMode) {
+              if (testMode && !monitorMode) {
                 sendConnectionTestResult(
                   sender,
                   sessionId,
@@ -2698,6 +2823,7 @@ function createStartSessionApi(ctx) {
             // would auto-reject the prompt. Use the external scope so the
             // host-editor test dialog can still render password/2FA prompts.
             scope: testMode ? "external" : "terminal",
+            allowSavePassword: !monitorMode,
             bootEpoch: options.bootEpoch,
             getAuthBanner: () => authBanner,
             shouldSkipAutoFill: () => shouldSkipKiPasswordAutoFill(authPhase),
@@ -2749,7 +2875,7 @@ function createStartSessionApi(ctx) {
           }
           // If authHandler is a function, it already handles keyboard-interactive
 
-          if (testMode) {
+          if (testMode && !monitorMode) {
             // A connection test exercises the single configured credential,
             // skipping the full agent / ~/.ssh key / method fallback chain.
             // Password credentials still allow keyboard-interactive after
