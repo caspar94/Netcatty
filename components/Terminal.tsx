@@ -2,6 +2,7 @@ import { clearTerminalBroadcastUserInput, markTerminalBroadcastUserInput } from 
 import { shouldBroadcastDuringSensitivePrompt } from "../domain/terminalBroadcast";
 import { STORAGE_KEY_TERMINAL_BROADCAST_PASSWORD_BYPASS } from "../infrastructure/config/storageKeys";
 import { createTerminalReflowReadingPosition } from "./terminal/terminalReflowReadingPosition";
+import { createTerminalFitFrameScheduler, type TerminalFitOptions } from "./terminal/terminalFitFrameScheduler";
 import { resolveHostOs } from '../domain/host';
 import { Terminal as XTerm } from "@xterm/xterm";
 import type { IMarker } from "@xterm/xterm";
@@ -2956,13 +2957,27 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   }
   useEffect(() => () => synchronizedFitSchedulerRef.current?.dispose(), []);
 
-  type SafeFitOptions = { force?: boolean; requireVisible?: boolean; immediate?: boolean; allowHidden?: boolean };
+  type SafeFitOptions = TerminalFitOptions;
+  const fitFrameSchedulerRef = useRef<ReturnType<typeof createTerminalFitFrameScheduler> | null>(null);
+  if (!fitFrameSchedulerRef.current) {
+    fitFrameSchedulerRef.current = createTerminalFitFrameScheduler((options) => safeFitRef.current(options));
+  }
+  useEffect(() => () => fitFrameSchedulerRef.current?.dispose(), []);
   const pendingWriteSafeFitRef = useRef<{
     term: XTerm;
     options: SafeFitOptions;
   } | null>(null);
 
   const safeFit = (options?: SafeFitOptions) => {
+    if (
+      XTERM_PERFORMANCE_CONFIG.resize.useRAF &&
+      typeof requestAnimationFrame === "function" &&
+      !options?.immediate
+    ) {
+      fitFrameSchedulerRef.current?.schedule(options);
+      return;
+    }
+    options = fitFrameSchedulerRef.current?.consume(options) ?? options;
     const fitAddon = fitAddonRef.current;
     if (!fitAddon) return;
     if (!isRendererActiveRef.current && !options?.allowHidden) {
@@ -3234,15 +3249,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       }
     };
 
-    if (
-      XTERM_PERFORMANCE_CONFIG.resize.useRAF &&
-      typeof requestAnimationFrame === "function" &&
-      !options?.immediate
-    ) {
-      requestAnimationFrame(runFit);
-    } else {
-      runFit();
-    }
+    runFit();
   };
 
   const prevIsResizingRef = useRef(isResizing);

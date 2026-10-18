@@ -38,7 +38,7 @@ async function probeCursorSdkAvailability(shellEnv, options = {}) {
   let cliAuth = { authenticated: false, authSource: null, email: null, binPath: null };
   try {
     if (probeCli) {
-      cliAuth = probeCli({ env: shellEnv }) || cliAuth;
+      cliAuth = await probeCli({ env: shellEnv }) || cliAuth;
     }
   } catch {
     cliAuth = { authenticated: false, authSource: null, email: null, binPath: null };
@@ -139,13 +139,13 @@ function registerAgentDiscoveryHandlers(ctx) {
         : probe.exitCode === 0 && isPlausibleCliVersionOutput(probe.version);
       if (!hasPlausibleVersion) continue;
 
-      // Layer-3: authentication (best-effort; never blocks discovery).
+      // Layer-3: authentication. Slow CLIs must yield the desktop main thread.
       let auth = { authenticated: false, authSource: null };
       try {
         if (agent.command === "claude") {
-          auth = probeClaudeAuth({ env: shellEnv });
+          auth = await probeClaudeAuth({ env: shellEnv });
         } else if (agent.command === "copilot") {
-          auth = probeCopilotAuth({});
+          auth = await probeCopilotAuth({ env: shellEnv });
         } else if (agent.command === "codex") {
           auth = { authenticated: false, authSource: null };
         } else if (agent.command === "cursor") {

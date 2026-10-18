@@ -149,4 +149,4 @@ const AgentActivityGroup: React.FC<AgentActivityGroupProps> = ({
   );
 };
 
-export default AgentActivityGroup;
+export default React.memo(AgentActivityGroup);

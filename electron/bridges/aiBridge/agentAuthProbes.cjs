@@ -10,7 +10,9 @@
 const { existsSync, readFileSync } = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { execFileSync } = require("node:child_process");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
+const execFileAsync = promisify(execFile);
 const { resolveCursorCliSpawnSpec } = require("./cursorCliSpawn.cjs");
 
 function defaultFileExists(p) {
@@ -22,10 +24,10 @@ function defaultReadFile(p) {
 }
 
 // ── Claude ──
-function defaultRunSecurity() {
+async function defaultRunSecurity() {
   // macOS keychain lookup for the Claude Code OAuth credentials entry.
   try {
-    const stdout = execFileSync(
+    const { stdout } = await execFileAsync(
       "security",
       ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
       { encoding: "utf8", timeout: 4000, stdio: ["pipe", "pipe", "pipe"] },
@@ -36,7 +38,7 @@ function defaultRunSecurity() {
   }
 }
 
-function probeClaudeAuth({ env, platform, runSecurity, fileExists, homeDir } = {}) {
+async function probeClaudeAuth({ env, platform, runSecurity, fileExists, homeDir } = {}) {
   const e = env || process.env;
   const plat = platform || process.platform;
   const fx = fileExists || defaultFileExists;
@@ -48,7 +50,7 @@ function probeClaudeAuth({ env, platform, runSecurity, fileExists, homeDir } = {
   if (apiKey || oauthToken || authToken) return { authenticated: true, authSource: "env" };
 
   if (plat === "darwin") {
-    const sec = (runSecurity || defaultRunSecurity)();
+    const sec = await (runSecurity || defaultRunSecurity)();
     if (sec && sec.exitCode === 0 && String(sec.stdout || "").trim()) {
       return { authenticated: true, authSource: "keychain" };
     }
@@ -64,10 +66,10 @@ function probeClaudeAuth({ env, platform, runSecurity, fileExists, homeDir } = {
 }
 
 // ── Copilot ──
-function defaultRunGhAuthStatus() {
+async function defaultRunGhAuthStatus(env) {
   try {
-    const out = execFileSync("gh", ["auth", "status"], {
-      encoding: "utf8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
+    const { stdout: out } = await execFileAsync("gh", ["auth", "status"], {
+      encoding: "utf8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"], env,
     });
     return { exitCode: 0, stdout: out, stderr: "" };
   } catch (err) {
@@ -75,8 +77,8 @@ function defaultRunGhAuthStatus() {
   }
 }
 
-function probeCopilotAuth({ runGhAuthStatus } = {}) {
-  const res = (runGhAuthStatus || defaultRunGhAuthStatus)();
+async function probeCopilotAuth({ runGhAuthStatus, env } = {}) {
+  const res = await (runGhAuthStatus || defaultRunGhAuthStatus)(env);
   if (res && res.exitCode === 0) return { authenticated: true, authSource: "gh" };
   return { authenticated: false, authSource: null };
 }
@@ -140,10 +142,10 @@ function stripCursorApiKeyFromProbeEnv(env) {
   return out;
 }
 
-function defaultResolveCursorCliBinary(name, env) {
+async function defaultResolveCursorCliBinary(name, env) {
   try {
     const whichCmd = process.platform === "win32" ? "where" : "which";
-    const out = execFileSync(whichCmd, [name], {
+    const { stdout: out } = await execFileAsync(whichCmd, [name], {
       encoding: "utf8",
       timeout: 4000,
       env: env || process.env,
@@ -156,10 +158,10 @@ function defaultResolveCursorCliBinary(name, env) {
   }
 }
 
-function defaultRunCursorStatus(binPath, env) {
+async function defaultRunCursorStatus(binPath, env) {
   const spec = resolveCursorCliSpawnSpec(binPath, ["status", "--format", "json"]);
   try {
-    const stdout = execFileSync(spec.command, spec.args, {
+    const { stdout } = await execFileAsync(spec.command, spec.args, {
       encoding: "utf8",
       timeout: 8000,
       env: env || process.env,
@@ -212,9 +214,9 @@ function parseCursorStatusJson(stdout) {
  * Resolves only `cursor-agent` (not bare `agent`) to avoid PATH collisions.
  * Strips CURSOR_API_KEY so "cli-login" is not proven by a metered API key alone.
  *
- * @returns {{ authenticated: boolean, authSource: string|null, email: string|null, binPath: string|null }}
+ * @returns {Promise<{ authenticated: boolean, authSource: string|null, email: string|null, binPath: string|null }>}
  */
-function probeCursorCliAuth({ env, resolveBinary, runStatus } = {}) {
+async function probeCursorCliAuth({ env, resolveBinary, runStatus } = {}) {
   const e = stripCursorApiKeyFromProbeEnv(env || process.env);
   const resolve = resolveBinary || ((name) => defaultResolveCursorCliBinary(name, e));
   const run = runStatus || ((bin) => defaultRunCursorStatus(bin, e));
@@ -225,7 +227,7 @@ function probeCursorCliAuth({ env, resolveBinary, runStatus } = {}) {
   for (const name of CURSOR_CLI_BINARY_CANDIDATES) {
     let binPath = null;
     try {
-      binPath = resolve(name);
+      binPath = await resolve(name);
     } catch {
       continue;
     }
@@ -234,7 +236,7 @@ function probeCursorCliAuth({ env, resolveBinary, runStatus } = {}) {
 
     let res = null;
     try {
-      res = run(binPath);
+      res = await run(binPath);
     } catch {
       continue;
     }

@@ -893,7 +893,7 @@ test("discover returns the 3-layer contract for an installed, authenticated agen
   const { bridge, restore } = loadBridgeWithMocks({
     resolveCliFromPath: (cmd) => (cmd === "claude" ? claudePath : null),
     isPlausibleCliVersionOutput: () => true,
-    probeClaudeAuth: () => ({ authenticated: true, authSource: "env" }),
+    probeClaudeAuth: async () => ({ authenticated: true, authSource: "env" }),
   });
   const ipcMain = createIpcMainStub();
   bridge.init({ sessions: new Map(), sftpClients: new Map(), electronModule: { app: { getPath: () => process.cwd() } } });

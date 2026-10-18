@@ -666,7 +666,7 @@ function registerSdkStreamHandlers(ctx) {
               || /(?:^|[/\\])cursor$/i.test(cursorCliBinPath);
             if (looksLikeSentinel && typeof probeCursorCliAuth === "function") {
               try {
-                const cliAuth = probeCursorCliAuth({ env: shellEnv });
+                const cliAuth = await probeCursorCliAuth({ env: shellEnv });
                 if (cliAuth?.binPath) cursorCliBinPath = cliAuth.binPath;
               } catch { /* best effort */ }
             }
@@ -936,7 +936,7 @@ function registerSdkStreamHandlers(ctx) {
             || /(?:^|[/\\])cursor$/i.test(cursorCliBinPath);
           if (looksLikeSentinel && typeof probeCursorCliAuth === "function") {
             try {
-              const cliAuth = probeCursorCliAuth({ env: shellEnv });
+              const cliAuth = await probeCursorCliAuth({ env: shellEnv });
               if (cliAuth?.binPath) cursorCliBinPath = cliAuth.binPath;
             } catch { /* best effort */ }
           }

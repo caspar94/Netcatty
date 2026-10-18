@@ -1,6 +1,6 @@
 import { Folder, FolderLock, Lock, Menu, MoreHorizontal, Plus, Settings, Sparkles } from 'lucide-react';
-import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { fromEditorTabId, isEditorTabId, toEditorTabId, useActiveTabId } from '../application/state/activeTabStore';
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { activeTabStore, fromEditorTabId, isEditorTabId, toEditorTabId } from '../application/state/activeTabStore';
 import { topTabsSessionsEqual } from '../domain/topTabsSessionsEqual';
 import { isHostTreeWorkTabSurface } from '../application/app/workTabSurface';
 import { buildTabShortcutNumberById } from '../application/app/tabShortcutTargets';
@@ -256,7 +256,6 @@ const TopTabsInner: React.FC<TopTabsProps> = ({
   const isHostTreeOpen = useTerminalHostTreeOpen();
   const hostTreeLayoutWidth = useTerminalHostTreeLayoutWidth();
   const toggleHostTree = useToggleTerminalHostTree();
-  const activeTabId = useActiveTabId();
   // Presentation (dynamic title / coding-CLI icon) is applied per-tab inside
   // SessionTopTab via usePresentedSession — do not remap the whole bar on
   // every sibling title tick.
@@ -379,14 +378,22 @@ const TopTabsInner: React.FC<TopTabsProps> = ({
   }, [sessions]);
 
   const activeWorkTabCount = orderedTabs.length;
-  const showHostTreeToggle = shouldShowHostTreeToggle({
-    enabled: showHostTreeSidebar,
-    activeTabId,
+  const hostTreeTabIds = useMemo(() => ({
     logViewIds: new Set(logViewMap.keys()),
-    orderedTabs,
     sessionIds: new Set(orphanSessionMap.keys()),
     workspaceIds: new Set(workspaceMap.keys()),
-  });
+  }), [logViewMap, orphanSessionMap, workspaceMap]);
+  // Individual tabs subscribe to their own active state. The bar only needs
+  // to update when switching between the root and host-tree work surfaces.
+  const getShowHostTreeToggle = useCallback(() => shouldShowHostTreeToggle({
+    enabled: showHostTreeSidebar,
+    activeTabId: activeTabStore.getActiveTabId(),
+    orderedTabs,
+    ...hostTreeTabIds,
+  }), [showHostTreeSidebar, orderedTabs, hostTreeTabIds]);
+  const showHostTreeToggle = useSyncExternalStore(
+    activeTabStore.subscribe, getShowHostTreeToggle, getShowHostTreeToggle,
+  );
   const hasHostTreeToggleSurface = shouldKeepHostTreeToggleSurface({
     enabled: showHostTreeSidebar,
     activeWorkTabCount,

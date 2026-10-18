@@ -28,6 +28,7 @@ if (!process.versions.electron) {
           'export {createXTermRuntime} from "./components/terminal/runtime/createXTermRuntime";',
           'export {DEFAULT_TERMINAL_SETTINGS} from "./domain/models/terminal";',
           'export {resolveInactiveTerminalPaneStyle} from "./components/terminalPaneVisibility";',
+          'export {createTerminalFitFrameScheduler} from "./components/terminal/terminalFitFrameScheduler";',
         ].join("\n"),
         loader: "ts", resolveDir: root,
       },
@@ -55,7 +56,7 @@ if (!process.versions.electron) {
       const assert = require('node:assert/strict');
       const loaded = {exports:{}};
       ((module,exports)=>{${bundle}})(loaded,loaded.exports);
-      const {createXTermRuntime,DEFAULT_TERMINAL_SETTINGS,resolveInactiveTerminalPaneStyle} = loaded.exports;
+      const {createXTermRuntime,DEFAULT_TERMINAL_SETTINGS,resolveInactiveTerminalPaneStyle,createTerminalFitFrameScheduler} = loaded.exports;
       const wait = ms => new Promise(resolve=>setTimeout(resolve,ms));
       const ref = current => ({current});
       const panes = [];
@@ -87,6 +88,19 @@ if (!process.versions.electron) {
         await new Promise(resolve=>r.term.write('ready\\r\\n',resolve));
       }
       assert.ok(root.querySelector('canvas'),'exercise WebGL, not only a fake renderer');
+      let fitCount=0;
+      const fitting=panes[0];
+      const fitScheduler=createTerminalFitFrameScheduler(()=>{fitCount++;fitting.r.fitAddon.fit();});
+      for(let index=0;index<50;index++) {
+        fitting.el.style.width=(900+index)+'px';
+        fitScheduler.schedule({force:index===0});
+      }
+      await wait(100);
+      assert.equal(fitCount,1,'a burst of layout events must perform only one fit');
+      const finalDimensions=fitting.r.fitAddon.proposeDimensions();
+      assert.equal(fitting.r.term.cols,finalDimensions.cols,'fit reads the final container width');
+      assert.equal(fitting.r.term.rows,finalDimensions.rows);
+      fitScheduler.dispose();apply(fitting,true);fitting.r.fitAddon.fit();
       const write=(pane,data)=>new Promise(resolve=>pane.r.term.write(data,resolve));
       const size=pane=>[pane.r.term.cols,pane.r.term.rows];
       const beforeSizes=panes.map(size);

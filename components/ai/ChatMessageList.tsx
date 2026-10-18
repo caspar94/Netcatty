@@ -6,7 +6,7 @@
  * No avatars. Thinking blocks are collapsible.
  */
 
-import { AlertCircle, BookOpen, FileText, RotateCcw, SquareTerminal, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertCircle, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import type { ChatMessage, ToolCall as AgentToolCall } from '../../infrastructure/ai/types';
@@ -16,7 +16,6 @@ import {
   ConversationContent,
   ConversationScrollButton,
 } from '../ai-elements/conversation';
-import { LazyMessageResponse } from '../ai-elements/LazyMessageResponse';
 import { Message, MessageContent } from '../ai-elements/messageShell';
 import {
   AI_MARKDOWN_WARMUP_INITIAL_DELAY_MS,
@@ -25,8 +24,8 @@ import {
   scheduleAiMarkdownWarmup,
 } from './aiMarkdownWarmup';
 import { ToolCall } from '../ai-elements/tool-call';
-import ThinkingBlock from './ThinkingBlock';
-import AgentActivityGroup from './AgentActivityGroup';
+import { ChatMessageBody } from './ChatMessageBody';
+import { ChatToolResultGroup } from './ChatToolResultGroup';
 import ToolCallGroup from './ToolCallGroup';
 import { CodexUserInputCard } from './CodexUserInputCard';
 import { CodebuddyElicitationCard } from './CodebuddyElicitationCard';
@@ -34,14 +33,6 @@ import {
   VaultArtifactNavigationProvider,
   type VaultArtifactNavSection,
 } from './toolArtifacts/VaultArtifactNavigationContext';
-import { parseTerminalToolArtifact } from './toolArtifacts/terminalToolArtifact';
-import { TerminalArtifactToolResult } from './toolArtifacts/TerminalArtifactToolResult';
-import {
-  inferArtifactToolNameFromCliArgs,
-  normalizeArtifactToolName,
-} from './toolArtifacts/toolArtifactNames';
-import { parseVaultToolArtifact } from './toolArtifacts/vaultToolArtifact';
-import { VaultArtifactToolResult } from './toolArtifacts/VaultArtifactToolResult';
 import type { Host, Snippet, VaultNote } from '../../types';
 import {
   onApprovalRequest,
@@ -125,8 +116,6 @@ export function shouldRenderAssistantAsPlainText(options: {
   return options.hideMarkdown;
 }
 
-const ASSISTANT_PLAIN_TEXT_CLASS = 'whitespace-pre-wrap break-words text-[13px] leading-[1.45]';
-
 export interface CodexApprovalRenderEntry {
   approvalId: string;
   request: ApprovalRequest;
@@ -163,7 +152,8 @@ const MESSAGE_RENDER_STEP = 50;
 export function pruneResolvedApprovals(
   previous: ReadonlyMap<string, boolean>,
   messages: readonly ChatMessage[],
-): Map<string, boolean> {
+): ReadonlyMap<string, boolean> {
+  if (previous.size === 0) return previous;
   const visibleToolCallIds = new Set<string>();
   for (const message of messages) {
     for (const toolCall of message.toolCalls ?? []) visibleToolCallIds.add(toolCall.id);
@@ -172,7 +162,7 @@ export function pruneResolvedApprovals(
   for (const [toolCallId, approved] of previous) {
     if (visibleToolCallIds.has(toolCallId)) next.set(toolCallId, approved);
   }
-  return next;
+  return next.size === previous.size ? previous : next;
 }
 
 const ChatMessageList: React.FC<ChatMessageListProps> = ({
@@ -190,7 +180,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
 }) => {
   // Track pending approvals from the approval gate
   const [pendingApprovals, setPendingApprovals] = useState<Map<string, ApprovalRequest>>(new Map());
-  const [resolvedApprovals, setResolvedApprovals] = useState<Map<string, boolean>>(new Map());
+  const [resolvedApprovals, setResolvedApprovals] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [pendingCodexInteractions, setPendingCodexInteractions] = useState<Map<string, CodexAppServerInteraction>>(new Map());
   const [pendingCodebuddyElicitations, setPendingCodebuddyElicitations] = useState<Map<string, CodebuddyElicitation>>(new Map());
 
@@ -573,94 +563,24 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
             // Collect this run of consecutive tool messages
             let end = idx + 1;
             while (end < displayedMessages.length && displayedMessages[end].role === "tool") end++;
-            const group = displayedMessages.slice(idx, end);
-            const toolResults = group.flatMap((toolMsg) =>
-              (toolMsg.toolResults ?? []).map((tr) => {
-                const args = toolCallArgs.get(tr.toolCallId);
-                const resultToolName = typeof tr.toolName === 'string' ? tr.toolName : undefined;
-                const pairedToolName = toolCallNames.get(tr.toolCallId);
-                const artifactToolName =
-                  inferArtifactToolNameFromCliArgs(args)
-                  ?? normalizeArtifactToolName(resultToolName)
-                  ?? normalizeArtifactToolName(pairedToolName);
-                return {
-                  toolCallId: tr.toolCallId,
-                  name: pairedToolName || resultToolName || tr.toolCallId,
-                  artifactToolName,
-                  args,
-                  content: tr.content,
-                  isError: tr.isError,
-                };
-              }),
+            const entries = displayedMessages.slice(idx, end).flatMap((toolMsg) =>
+              (toolMsg.toolResults ?? []).map((result) => ({
+                result,
+                pairedToolName: toolCallNames.get(result.toolCallId),
+                args: toolCallArgs.get(result.toolCallId),
+              })),
             );
-            const groupTotal = toolResults.length;
-
-            // Expanded while the agent is still working (no assistant response follows)
             const hasAssistantAfter = end < displayedMessages.length
-              && displayedMessages[end].role === "assistant";
-
-            const renderToolResultItem = (item: typeof toolResults[number]) => {
-              const artifactToolName = item.artifactToolName ?? item.name;
-              const terminalArtifact = parseTerminalToolArtifact(artifactToolName, item.content);
-              if (terminalArtifact) {
-                return (
-                  <TerminalArtifactToolResult
-                    key={item.toolCallId}
-                    artifact={terminalArtifact}
-                    toolName={artifactToolName}
-                    args={item.args}
-                    result={item.content}
-                    isError={item.isError}
-                  />
-                );
-              }
-              const artifact = parseVaultToolArtifact(artifactToolName, item.content);
-              if (artifact) {
-                return (
-                  <VaultArtifactToolResult
-                    key={item.toolCallId}
-                    artifact={artifact}
-                    toolName={artifactToolName}
-                    args={item.args}
-                    result={item.content}
-                    isError={item.isError}
-                  />
-                );
-              }
-              return (
-                <React.Profiler key={item.toolCallId} {...getAIPanelProfilerProps("AIChatPanel.ToolCall.Result")}>
-                  <div>
-                    <ToolCall
-                      name={item.name}
-                      args={item.args}
-                      result={item.content}
-                      isError={item.isError}
-                    />
-                  </div>
-                </React.Profiler>
-              );
-            };
-
-            if (groupTotal === 1) {
-              return (
-                <div key={`tool-group-${message.id}`} className="py-0.5">
-                  {renderToolResultItem(toolResults[0])}
-                </div>
-              );
-            }
-
+              && displayedMessages[end].role === 'assistant';
             return (
-              <ToolCallGroup
+              <ChatToolResultGroup
                 key={`tool-group-${message.id}`}
-                count={groupTotal}
+                entries={entries}
                 defaultExpanded={!hasAssistantAfter}
-              >
-                {toolResults.map(renderToolResultItem)}
-              </ToolCallGroup>
+              />
             );
           }
 
-          const isUser = message.role === 'user';
           const isLastAssistant = message === lastAssistantMessage;
           const isThisStreaming = isStreaming && isLastAssistant;
 
@@ -671,87 +591,13 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
               from={message.role}
             >
               <MessageContent from={message.role}>
-                {/* Thinking block */}
-                {!isUser && message.thinking && (
-                  <ThinkingBlock
-                    content={message.thinking}
-                    isStreaming={!!isThisStreaming && !message.content}
-                    durationMs={message.thinkingDurationMs}
-                  />
-                )}
-
-                {!isUser && (message.agentActivities?.length || message.usage) && (
-                  <AgentActivityGroup
-                    activities={message.agentActivities}
-                    usage={message.usage}
-                    isStreaming={!!isThisStreaming}
-                    t={t}
-                  />
-                )}
-
-                {/* User attachments (images, files) — fallback to legacy `images` field */}
-                {isUser && !hideAttachments && (message.attachments ?? message.images)?.length && (
-                  <div className="flex gap-1.5 flex-wrap mb-1">
-                    {(message.attachments ?? message.images)!.map((att, i) => (
-                      att.terminalSelection ? (
-                        <div
-                          key={att.filename ? `${att.filename}-${i}` : `att-${message.id}-${i}`}
-                          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md bg-muted/20 border border-border/20 text-[11px] text-foreground/70"
-                        >
-                          <SquareTerminal size={12} className="text-muted-foreground/60 shrink-0" />
-                          <span className="truncate max-w-[150px]">{att.filename || 'terminal selection'}</span>
-                        </div>
-                      ) : att.vaultNoteId ? (
-                        <div
-                          key={att.filename ? `${att.filename}-${i}` : `att-${message.id}-${i}`}
-                          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md bg-muted/20 border border-border/20 text-[11px] text-foreground/70"
-                        >
-                          <BookOpen size={12} className="text-muted-foreground/60 shrink-0" />
-                          <span className="truncate max-w-[150px]">{att.vaultNoteTitle || att.filename || 'note'}</span>
-                        </div>
-                      ) : att.mediaType.startsWith('image/') ? (
-                        <img
-                          key={att.filename ? `${att.filename}-${i}` : `att-${message.id}-${i}`}
-                          src={`data:${att.mediaType};base64,${att.base64Data}`}
-                          alt={att.filename || 'image'}
-                          className="max-h-[120px] max-w-[200px] rounded-md object-contain border border-border/20 cursor-pointer hover:opacity-80 transition-opacity"
-                          onClick={() => openPreview(`data:${att.mediaType};base64,${att.base64Data}`, att.filename || 'image')}
-                        />
-                      ) : (
-                        <div
-                          key={att.filename ? `${att.filename}-${i}` : `att-${message.id}-${i}`}
-                          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md bg-muted/20 border border-border/20 text-[11px] text-foreground/70"
-                        >
-                          <FileText size={12} className="text-muted-foreground/60 shrink-0" />
-                          <span className="truncate max-w-[120px]">{att.filename || 'file'}</span>
-                        </div>
-                      )
-                    ))}
-                  </div>
-                )}
-
-                {message.content && (
-                  isUser
-                    ? <div className={ASSISTANT_PLAIN_TEXT_CLASS}>{message.content}</div>
-                    : shouldRenderAssistantAsPlainText({ hideMarkdown })
-                      ? (
-                          <div
-                            className={ASSISTANT_PLAIN_TEXT_CLASS}
-                            data-ai-content="plain"
-                          >
-                            {message.content}
-                          </div>
-                        )
-                      : (
-                          <React.Profiler {...getAIPanelProfilerProps('AIChatPanel.Markdown')}>
-                            <div data-ai-content="markdown">
-                              <LazyMessageResponse deferUntilWarm isAnimating={!!isThisStreaming}>
-                                {message.content}
-                              </LazyMessageResponse>
-                            </div>
-                          </React.Profiler>
-                        )
-                )}
+                <ChatMessageBody
+                  message={message}
+                  isStreaming={!!isThisStreaming}
+                  hideAttachments={hideAttachments}
+                  hideMarkdown={hideMarkdown}
+                  onOpenPreview={openPreview}
+                />
 
                 {/* Pending tool calls from the *last* assistant message are rendered
                     after all tool-result messages (see below) for chronological order.

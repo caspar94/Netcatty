@@ -66,7 +66,8 @@ test('AI panel no longer starts Streamdown just because it became visible', () =
 
 test('chat history defers Streamdown until warmup is already done', () => {
   const list = readFileSync(new URL('./ChatMessageList.tsx', import.meta.url), 'utf8');
-  assert.match(list, /deferUntilWarm/);
+  const body = readFileSync(new URL('./ChatMessageBody.tsx', import.meta.url), 'utf8');
+  assert.match(body, /deferUntilWarm/);
   assert.match(list, /scheduleAiMarkdownWarmup/);
   assert.match(list, /isAiComposerTyping/);
   assert.match(list, /AI_MARKDOWN_WARMUP_INITIAL_DELAY_MS/);

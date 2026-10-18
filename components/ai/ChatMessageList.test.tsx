@@ -38,6 +38,18 @@ test("resolved approval state retains only tool calls still present in messages"
   assert.deepEqual([...next], [["live-call", false]]);
 });
 
+test('resolved approval cleanup preserves unchanged state during streaming', () => {
+  const empty = new Map<string, boolean>();
+  assert.equal(pruneResolvedApprovals(empty, [makeMessage(1)]), empty);
+  const approvals = new Map([['live-call', true]]);
+  const message: ChatMessage = {
+    ...makeMessage(1),
+    toolCalls: [{ id: 'live-call', name: 'shell', arguments: {} }],
+  };
+  assert.equal(pruneResolvedApprovals(approvals, [message]), approvals);
+  assert.equal(pruneResolvedApprovals(approvals, [{ ...message, content: 'next token' }]), approvals);
+});
+
 test("assistant content stays plain only when markdown is hidden", () => {
   assert.equal(shouldRenderAssistantAsPlainText({
     hideMarkdown: false,
@@ -83,7 +95,9 @@ test("ChatMessageList renders Streamdown for the streaming assistant message", (
 test("streaming assistant content keeps Streamdown live with isAnimating", () => {
   const source = readFileSync(new URL("./ChatMessageList.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /isAnimating=\{!!isThisStreaming\}/);
+  const bodySource = readFileSync(new URL('./ChatMessageBody.tsx', import.meta.url), 'utf8');
+  assert.match(source, /isStreaming=\{!!isThisStreaming\}/);
+  assert.match(bodySource, /isAnimating=\{isStreaming\}/);
   assert.doesNotMatch(source, /isStreaming: !!isThisStreaming/);
 });
 

@@ -68,6 +68,8 @@
     "test:tray-panel-layout": "electron scripts/tray-panel-layout.live.test.cjs",
     "test:xterm-foreground-intense": "electron scripts/xterm-foreground-intense.live.test.cjs",
     "test:terminal-background-rendering": "electron scripts/terminal-background-rendering.live.test.cjs",
+    "test:top-tabs-switch-performance": "cross-env NETCATTY_EXPECT_STABLE_TAB_BAR=1 electron scripts/top-tabs-switch-performance.live.test.cjs",
+    "test:agent-chat-performance": "cross-env NETCATTY_EXPECT_STABLE_CHAT_HISTORY=1 electron scripts/agent-chat-performance.live.test.cjs",
     "test:xterm-webgl-overflow": "electron scripts/xterm-webgl-atlas-overflow.live.test.cjs",
     "test:xterm-macos-selection": "electron scripts/xterm-macos-column-selection.live.test.cjs",
     "test:xterm-keyword-highlight-performance": "electron scripts/xterm-keyword-highlight-performance.live.test.cjs",

@@ -7,8 +7,8 @@ const {
 const { prepareCommandForSpawn } = require("../ai/shellUtils.cjs");
 const { resolveCursorCliSpawnSpec: resolveSharedCursorCliSpawnSpec } = require("./cursorCliSpawn.cjs");
 
-test("probeClaudeAuth: env ANTHROPIC_API_KEY -> authenticated env", () => {
-  const r = probeClaudeAuth({
+test("probeClaudeAuth: env ANTHROPIC_API_KEY -> authenticated env", async () => {
+  const r = await probeClaudeAuth({
     env: { ANTHROPIC_API_KEY: "sk-x" },
     platform: "darwin",
     runSecurity: () => { throw new Error("should not be called"); },
@@ -18,8 +18,8 @@ test("probeClaudeAuth: env ANTHROPIC_API_KEY -> authenticated env", () => {
   assert.equal(r.authSource, "env");
 });
 
-test("probeClaudeAuth: macOS keychain hit -> authenticated keychain", () => {
-  const r = probeClaudeAuth({
+test("probeClaudeAuth: macOS keychain hit -> authenticated keychain", async () => {
+  const r = await probeClaudeAuth({
     env: {},
     platform: "darwin",
     runSecurity: () => ({ exitCode: 0, stdout: '{"claudeAiOauth":{}}' }),
@@ -29,8 +29,8 @@ test("probeClaudeAuth: macOS keychain hit -> authenticated keychain", () => {
   assert.equal(r.authSource, "keychain");
 });
 
-test("probeClaudeAuth: linux credentials file -> authenticated credentials-file", () => {
-  const r = probeClaudeAuth({
+test("probeClaudeAuth: linux credentials file -> authenticated credentials-file", async () => {
+  const r = await probeClaudeAuth({
     env: {},
     platform: "linux",
     runSecurity: () => { throw new Error("no keychain on linux"); },
@@ -40,8 +40,8 @@ test("probeClaudeAuth: linux credentials file -> authenticated credentials-file"
   assert.equal(r.authSource, "credentials-file");
 });
 
-test("probeClaudeAuth: nothing -> not authenticated", () => {
-  const r = probeClaudeAuth({
+test("probeClaudeAuth: nothing -> not authenticated", async () => {
+  const r = await probeClaudeAuth({
     env: {}, platform: "darwin",
     runSecurity: () => ({ exitCode: 44, stdout: "" }),
     fileExists: () => false,
@@ -50,15 +50,43 @@ test("probeClaudeAuth: nothing -> not authenticated", () => {
   assert.equal(r.authSource, null);
 });
 
-test("probeCopilotAuth: gh auth status exit 0 -> authenticated gh", () => {
-  const r = probeCopilotAuth({ runGhAuthStatus: () => ({ exitCode: 0, stderr: "Logged in to github.com" }) });
+test("probeCopilotAuth: gh auth status exit 0 -> authenticated gh", async () => {
+  const r = await probeCopilotAuth({ runGhAuthStatus: () => ({ exitCode: 0, stderr: "Logged in to github.com" }) });
   assert.equal(r.authenticated, true);
   assert.equal(r.authSource, "gh");
 });
 
-test("probeCopilotAuth: gh auth status non-zero -> not authenticated", () => {
-  const r = probeCopilotAuth({ runGhAuthStatus: () => ({ exitCode: 1, stderr: "not logged in" }) });
+test("probeCopilotAuth: gh auth status non-zero -> not authenticated", async () => {
+  const r = await probeCopilotAuth({ runGhAuthStatus: () => ({ exitCode: 1, stderr: "not logged in" }) });
   assert.equal(r.authenticated, false);
+});
+
+test("slow authentication CLI leaves the main event loop responsive", { skip: process.platform === "win32" }, async (t) => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const tempDirBridge = require("../tempDirBridge.cjs");
+  const dir = fs.mkdtempSync(`${tempDirBridge.getTempFilePath("auth-responsiveness-test")}-`);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "gh"), `#!${process.execPath}\nsetTimeout(() => process.exit(0), 200);\n`, { mode: 0o755 });
+  let timerFired = false;
+  const timer = setTimeout(() => { timerFired = true; }, 20);
+  t.after(() => clearTimeout(timer));
+  const result = await probeCopilotAuth({ env: { ...process.env, PATH: dir } });
+  assert.equal(result.authenticated, true);
+  assert.equal(timerFired, true, "desktop timers must run while the CLI is pending");
+});
+
+test("authentication probes await asynchronous runners and handle rejected Cursor probes", async () => {
+  assert.equal((await probeClaudeAuth({
+    env: {}, platform: "darwin", fileExists: () => false,
+    runSecurity: async () => ({ exitCode: 0, stdout: "credential-present" }),
+  })).authSource, "keychain");
+  const result = await probeCursorCliAuth({
+    env: {}, resolveBinary: async () => "/test/cursor-agent",
+    runStatus: async () => { throw new Error("CLI unavailable"); },
+  });
+  assert.equal(result.authenticated, false);
+  assert.equal(result.binPath, "/test/cursor-agent");
 });
 
 test("probeCodexAuth: 'Logged in using ChatGPT' -> authenticated chatgpt", () => {
@@ -162,9 +190,9 @@ test("probeCodebuddyAuth: CODEBUDDY_API_KEY takes precedence over settings.json"
 });
 
 // ── Cursor CLI login ──
-test("probeCursorCliAuth: prefers cursor-agent and parses authenticated JSON", () => {
+test("probeCursorCliAuth: prefers cursor-agent and parses authenticated JSON", async () => {
   const calls = [];
-  const r = probeCursorCliAuth({
+  const r = await probeCursorCliAuth({
     env: { CURSOR_API_KEY: "should-be-stripped" },
     resolveBinary: (name) => {
       calls.push(name);
@@ -189,10 +217,10 @@ test("probeCursorCliAuth: prefers cursor-agent and parses authenticated JSON", (
   assert.equal(r.binPath, "/bin/cursor-agent");
 });
 
-test("probeCursorCliAuth: does not fall back to bare agent binary", () => {
+test("probeCursorCliAuth: does not fall back to bare agent binary", async () => {
   const statusCalls = [];
   const resolveCalls = [];
-  const r = probeCursorCliAuth({
+  const r = await probeCursorCliAuth({
     resolveBinary: (name) => {
       resolveCalls.push(name);
       return name === "agent" ? "/bin/agent" : null;
@@ -245,8 +273,8 @@ test("probeGrokAuth: nothing -> not authenticated", () => {
   assert.equal(r.authSource, null);
 });
 
-test("probeCursorCliAuth: unauthenticated JSON -> not authenticated but keeps binPath", () => {
-  const r = probeCursorCliAuth({
+test("probeCursorCliAuth: unauthenticated JSON -> not authenticated but keeps binPath", async () => {
+  const r = await probeCursorCliAuth({
     resolveBinary: (name) => (name === "cursor-agent" ? "/bin/cursor-agent" : null),
     runStatus: () => ({
       exitCode: 0,
@@ -258,8 +286,8 @@ test("probeCursorCliAuth: unauthenticated JSON -> not authenticated but keeps bi
   assert.equal(r.binPath, "/bin/cursor-agent");
 });
 
-test("probeCursorCliAuth: missing binary -> not authenticated", () => {
-  const r = probeCursorCliAuth({
+test("probeCursorCliAuth: missing binary -> not authenticated", async () => {
+  const r = await probeCursorCliAuth({
     resolveBinary: () => null,
     runStatus: () => { throw new Error("should not run"); },
   });
@@ -267,8 +295,8 @@ test("probeCursorCliAuth: missing binary -> not authenticated", () => {
   assert.equal(r.binPath, null);
 });
 
-test("probeCursorCliAuth: status command failure -> not authenticated", () => {
-  const r = probeCursorCliAuth({
+test("probeCursorCliAuth: status command failure -> not authenticated", async () => {
+  const r = await probeCursorCliAuth({
     resolveBinary: () => "/bin/cursor-agent",
     runStatus: () => ({ exitCode: 1, stdout: "", stderr: "boom" }),
   });
@@ -276,8 +304,8 @@ test("probeCursorCliAuth: status command failure -> not authenticated", () => {
   assert.equal(r.binPath, "/bin/cursor-agent");
 });
 
-test("probeCursorCliAuth: unrecognized status stdout keeps resolved binPath", () => {
-  const r = probeCursorCliAuth({
+test("probeCursorCliAuth: unrecognized status stdout keeps resolved binPath", async () => {
+  const r = await probeCursorCliAuth({
     resolveBinary: () => "/bin/cursor-agent",
     runStatus: () => ({ exitCode: 0, stdout: "cursor-agent 1.2.3\nnot json" }),
   });
@@ -286,8 +314,8 @@ test("probeCursorCliAuth: unrecognized status stdout keeps resolved binPath", ()
   assert.equal(r.binPath, "/bin/cursor-agent");
 });
 
-test("probeCursorCliAuth: thrown status probe keeps resolved binPath", () => {
-  const r = probeCursorCliAuth({
+test("probeCursorCliAuth: thrown status probe keeps resolved binPath", async () => {
+  const r = await probeCursorCliAuth({
     resolveBinary: () => "/bin/cursor-agent",
     runStatus: () => { throw new Error("timeout"); },
   });
@@ -296,8 +324,8 @@ test("probeCursorCliAuth: thrown status probe keeps resolved binPath", () => {
   assert.equal(r.binPath, "/bin/cursor-agent");
 });
 
-test("probeCursorCliAuth: extracts authenticated JSON wrapped in cmd noise", () => {
-  const r = probeCursorCliAuth({
+test("probeCursorCliAuth: extracts authenticated JSON wrapped in cmd noise", async () => {
+  const r = await probeCursorCliAuth({
     resolveBinary: () => "C:\\Users\\me\\AppData\\Local\\cursor-agent\\cursor-agent.cmd",
     runStatus: () => ({
       exitCode: 0,
@@ -331,4 +359,25 @@ test("resolveCursorCliSpawnSpec re-exports the shared native launch helper", () 
     }),
     prepareCommandForSpawn(shim, args, { unwrapNativeExe: false }),
   );
+});
+
+test("CLI login probe keeps the event loop responsive while the child runs", {
+  skip: process.platform === "win32" ? "POSIX fixture executable" : false,
+}, async () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const temp = require("../tempDirBridge.cjs");
+  const directory = fs.mkdtempSync(`${temp.getTempFilePath("agent-probe-responsive")}-`);
+  const executable = path.join(directory, "cursor-agent");
+  fs.writeFileSync(executable, "#!/bin/sh\n/bin/sleep 0.15\nprintf '%s\\n' '{\"isAuthenticated\":true,\"status\":\"authenticated\"}'\n", { mode: 0o755 });
+  let heartbeatRan = false;
+  const heartbeat = setTimeout(() => { heartbeatRan = true; }, 10);
+  try {
+    const result = await probeCursorCliAuth({ resolveBinary: () => executable });
+    assert.equal(result.authenticated, true);
+    assert.equal(heartbeatRan, true, "a pending CLI must not block the UI event loop");
+  } finally {
+    clearTimeout(heartbeat);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });

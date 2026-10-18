@@ -12,7 +12,8 @@ test('safeFit skips only renderers suspended by hibernate unless explicitly allo
 });
 
 test('safeFit can run synchronously for immediate layout changes', () => {
-  assert.match(source, /immediate\?: boolean/);
+  const optionsSource = readFileSync(new URL('./terminalFitFrameScheduler.ts', import.meta.url), 'utf8');
+  assert.match(optionsSource, /immediate\?: boolean/);
   assert.match(
     source,
     /XTERM_PERFORMANCE_CONFIG\.resize\.useRAF &&\s*typeof requestAnimationFrame === "function" &&\s*!options\?\.immediate/,
