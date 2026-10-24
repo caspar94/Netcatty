@@ -1,6 +1,15 @@
 import type { Messages } from '../types';
 
 export const enTerminalMessages: Messages = {
+  'terminal.toolbar.openSessionLog': 'Open session log',
+  'terminal.toolbar.sessionLogActions': 'Session log actions',
+  'terminal.toolbar.sessionLog.menu': 'Session log',
+  'terminal.toolbar.sessionLog.open': 'Open',
+  'terminal.toolbar.sessionLog.reveal': 'Show in folder',
+  'terminal.toolbar.sessionLog.chooseApplication': 'Open with…',
+  'terminal.toolbar.sessionLog.systemDefault': 'Open with system default',
+  'terminal.toolbar.openSessionLogFailed': 'Failed to open session log.',
+
   'terminal.menu.saveScreen': 'Save current screen',
   'terminal.saveScreen.failed': 'Failed to save terminal screen.',
   // Multi-line paste confirmation dialog (#3398)
@@ -68,6 +77,8 @@ export const enTerminalMessages: Messages = {
   'terminal.composeBar.send': 'Send',
   'terminal.composeBar.close': 'Close compose bar',
   'terminal.composeBar.broadcasting': 'Broadcasting to all sessions',
+  'terminal.composeBar.sendToAll': 'Send to all sessions',
+  'terminal.composeBar.sendToActive': 'Send to the active session only',
   'terminal.composeBar.broadcastAllowPassword': 'Broadcast without password protection',
   'terminal.composeBar.resize': 'Resize compose bar height',
   'terminal.composeBar.manageSnippets': 'Manage quick snippets',
@@ -109,6 +120,8 @@ export const enTerminalMessages: Messages = {
   'terminal.serverStats.cpu': 'CPU Usage',
   'terminal.serverStats.cpuCores': 'CPU Core Usage',
   'terminal.serverStats.gpu': 'GPU Usage',
+  'terminal.serverStats.gpuDevices': 'GPU Device Usage',
+  'terminal.serverStats.gpuIndex': 'GPU {{index}}',
   'terminal.serverStats.memory': 'Memory Usage',
   'terminal.serverStats.memoryDetails': 'Memory Details',
   'terminal.serverStats.memUsed': 'Used',
@@ -866,6 +879,7 @@ export const enTerminalMessages: Messages = {
   'serial.field.flowControl': 'Flow Control',
   'serial.noPorts': 'No serial ports detected. Connect a device and refresh.',
   'serial.field.customPort': 'Custom Port Path',
+  'serial.field.namedPipeHint': 'Windows VM console: enter \\\\.\\pipe\\name. The VM must create the pipe as a server. Baud rate and framing are ignored.',
   'serial.field.customPortPlaceholder': 'e.g. /dev/ttys001 or COM1',
   'serial.type.hardware': 'Hardware',
   'serial.type.pseudo': 'Pseudo Terminal',
@@ -910,11 +924,13 @@ export const enTerminalMessages: Messages = {
   'keyboard.interactive.desc': 'The server requires additional authentication.',
   'keyboard.interactive.descWithHost': 'The server {hostname} requires additional authentication.',
   'keyboard.interactive.response': 'Response',
+  'keyboard.interactive.verificationCode': 'Verification code',
   'keyboard.interactive.enterCode': 'Enter verification code',
   'keyboard.interactive.enterResponse': 'Enter response',
   'keyboard.interactive.submit': 'Submit',
   'keyboard.interactive.verifying': 'Verifying...',
   'keyboard.interactive.savePassword': 'Save password',
+  'keyboard.interactive.fillTotp': 'Fill verification code',
 
   // Passphrase Modal for encrypted SSH keys
   'passphrase.title': 'SSH Key Passphrase',

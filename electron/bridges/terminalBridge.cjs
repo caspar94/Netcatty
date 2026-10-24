@@ -21,6 +21,7 @@ const trackedFlowPauseSenders = new WeakSet();
 
 const pty = require("node-pty");
 const { SerialPort } = require("serialport");
+const { createSerialTransport } = require("./serialNamedPipe.cjs");
 const {
   configureTerminalSessionDataEmitter,
   emitTerminalSessionData,
@@ -137,6 +138,9 @@ function init(deps) {
 }
 
 function openTerminalOutputSession(sessionId, webContents) {
+  require("./rendererSessionLifetime.cjs").trackRendererSessionLifetime(
+    sessions, sessionId, webContents, closeSession,
+  );
   const generation = webContents?.claimSessionGeneration?.(sessionId);
   const session = sessions?.get?.(sessionId);
   if (session && Number.isSafeInteger(generation)) {
@@ -540,6 +544,9 @@ async function restoreAttachedSessionOutputOnce(
           } else {
             openTerminalOutputSession(sessionId, home);
             session.webContentsId = home.id;
+            require("./rendererSessionLifetime.cjs").trackRendererSessionLifetime(
+              sessions, sessionId, home, closeSession, true,
+            );
             attachHomeWebContentsIds.delete(sessionId);
             result = { success: true, restored: true, webContentsId: home.id };
           }
@@ -621,7 +628,7 @@ async function restoreTerminalSessionOutput(event, payload, terminalWorkerManage
       if (!result?.success) {
         return { success: false, error: result?.error || "Failed to restore session output" };
       }
-      terminalWorkerManager.clearAttachHome?.(sessionId);
+      terminalWorkerManager.clearAttachHome?.(sessionId, target.id);
       return { success: true, restored: true, webContentsId: target.id };
     } catch (err) {
       return { success: false, error: err?.message || String(err) };
@@ -636,6 +643,9 @@ async function restoreTerminalSessionOutput(event, payload, terminalWorkerManage
   try {
     openTerminalOutputSession(sessionId, target);
     session.webContentsId = target.id;
+    require("./rendererSessionLifetime.cjs").trackRendererSessionLifetime(
+      sessions, sessionId, target, closeSession, true,
+    );
     attachHomeWebContentsIds.delete(sessionId);
     return { success: true, restored: true, webContentsId: target.id };
   } catch (err) {
@@ -1304,7 +1314,7 @@ async function listSerialPorts() {
 async function startSerialSession(event, options) {
   const sessionId = options.sessionId || randomUUID();
 
-  const portPath = options.path;
+  const portPath = options.path?.trim();
   const baudRate = options.baudRate || 115200;
   const dataBits = options.dataBits || 8;
   const stopBits = options.stopBits || 1;
@@ -1338,7 +1348,7 @@ async function startSerialSession(event, options) {
       resolve(value);
     };
     try {
-      const serialPort = new SerialPort({
+      const serialPort = createSerialTransport({
         path: portPath,
         baudRate: baudRate,
         dataBits: dataBits,
@@ -1348,7 +1358,7 @@ async function startSerialSession(event, options) {
         xon: flowControl === 'xon/xoff',
         xoff: flowControl === 'xon/xoff',
         autoOpen: false,
-      });
+      }, SerialPort);
 
       const abortPendingOpen = () => {
         try { serialPort.close(); } catch { /* ignore */ }
@@ -2630,11 +2640,14 @@ function registerHandlers(ipcMain, options = {}) {
     });
     return;
   }
-  ipcMain.handle("netcatty:local:start", startLocalSession);
-  ipcMain.handle("netcatty:telnet:start", startTelnetSession);
-  ipcMain.handle("netcatty:mosh:start", startMoshSession);
-  ipcMain.handle("netcatty:et:start", startEtSession);
-  ipcMain.handle("netcatty:serial:start", startSerialSession);
+  const wrapSessionStart = options.manageSessionLogRestart === true
+    ? sessionLogStreamManager.withSessionLogRestart
+    : (handler) => handler;
+  ipcMain.handle("netcatty:local:start", wrapSessionStart(startLocalSession));
+  ipcMain.handle("netcatty:telnet:start", wrapSessionStart(startTelnetSession));
+  ipcMain.handle("netcatty:mosh:start", wrapSessionStart(startMoshSession));
+  ipcMain.handle("netcatty:et:start", wrapSessionStart(startEtSession));
+  ipcMain.handle("netcatty:serial:start", wrapSessionStart(startSerialSession));
   ipcMain.handle("netcatty:serial:list", listSerialPorts);
   ipcMain.handle("netcatty:serial:ymodem-send", sendSerialYmodem);
   ipcMain.handle("netcatty:serial:ymodem-receive", receiveSerialYmodem);

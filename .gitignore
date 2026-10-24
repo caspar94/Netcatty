@@ -51,8 +51,6 @@
 # traverse ignored directories, so both steps are required.
 !.github/
 !.github/**
-!.vscode/
-!.vscode/**
 !application/
 !application/**
 !build/
@@ -123,8 +121,7 @@ coverage
 /public/monaco
 
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
+.vscode/
 .idea
 *.suo
 *.ntvs*

@@ -417,7 +417,7 @@ export const zhCNCoreMessages: Messages = {
   'settings.appearance.themeColor.dark': '深色主题',
   'settings.appearance.customCss': '自定义 CSS',
   'settings.appearance.customCss.desc':
-    '使用自定义 CSS 个性化界面，修改会立即生效。',
+    '使用自定义 CSS 个性化界面，修改会立即生效。选中的顶部标签（`.top-tab[data-active="true"]`）会读取 `--top-tab-active-bg`、`--top-tab-active-fg` 和 `--top-tab-active-border`。不设置则保持当前外观。',
   'settings.appearance.customCss.help.ariaLabel': '自定义 CSS 说明',
   'settings.appearance.customCss.help.title': '自定义 CSS 说明',
   'settings.appearance.customCss.help.body': `主要 UI 区块都暴露了 \`data-section\` 属性，供你用 CSS 定位。编辑后会立即生效。
@@ -443,6 +443,22 @@ export const zhCNCoreMessages: Messages = {
 - \`top-tabs-toolbar-actions\` — 右侧菜单和工具栏
 - \`top-tabs-host-tree-toggle\`
 - \`top-tabs-quick-switcher-toggle\`
+
+选中的顶部标签带有 \`top-tab\` 类和 \`data-active="true"\`。设置下面的变量即可改变选中标签的颜色；不设置则保持当前外观。这些变量不需要 \`!important\`。
+
+- \`--top-tab-active-bg\` — 选中标签的背景（默认是现在的标签背景）
+- \`--top-tab-active-fg\` — 选中标签的文字颜色（默认是现在的文字颜色）
+- \`--top-tab-active-border\` — 1px 内描边（默认透明，也就是没有边框）
+
+Vaults 标签保持扁平，不使用这块背景。
+
+\`\`\`css
+.top-tab[data-active="true"] {
+  --top-tab-active-bg: #2563eb;
+  --top-tab-active-fg: #ffffff;
+  --top-tab-active-border: #1d4ed8;
+}
+\`\`\`
 
 ### 保险库
 
@@ -537,7 +553,7 @@ export const zhCNCoreMessages: Messages = {
 \`\`\`
 `,
   'settings.appearance.customCss.placeholder':
-    '/* 示例 — 由于 Tailwind 优先级较高，需要使用 !important */\n\n/* 隐藏顶部标签栏里的主机列表开关 */\n[data-section="top-tabs-host-tree-toggle"] {\n  width: 0 !important;\n  opacity: 0 !important;\n  pointer-events: none !important;\n}\n\n/* 隐藏打开快速切换器的加号按钮 */\n[data-section="top-tabs-quick-switcher-toggle"] {\n  display: none !important;\n}\n\n/* SFTP / 操作侧栏边框（关闭侧栏后不会残留） */\n[data-section="terminal-side-panel"] {\n  border: 2px solid #00c851 !important;\n  border-radius: 6px !important;\n}\n\n/* 修改整个操作侧栏背景，而不只是顶部标签 */\n[data-section="terminal-side-panel"],\n[data-section="terminal-side-panel-tabs"],\n[data-section="terminal-side-panel-content"],\n[data-section="terminal-sftp-panel"],\n[data-section="terminal-sftp-pane"],\n[data-section="terminal-sftp-list"],\n[data-section="terminal-sftp-tree"],\n[data-section="terminal-sftp-transfer-queue"] {\n  background-color: #1c384a !important;\n}\n\n/* 修改选中的 SFTP 文件行 */\n[data-section="terminal-sftp-list-row"][data-selected="true"] {\n  background-color: #00c851 !important;\n  color: #001b10 !important;\n}\n\n/* 加粗分屏分割线 */\n[data-section="terminal-split-resizer-bar"] {\n  background-color: hsl(var(--primary)) !important;\n  transform: scale(2) !important;\n}\n\n/* 高亮当前聚焦的分屏 */\n[data-section="terminal-split-pane"][data-focused="true"] {\n  outline: 2px solid hsl(var(--primary)) !important;\n  outline-offset: -2px;\n}\n\n/* 也可在 设置 → 终端 → 工作区聚焦指示 → 聚焦窗格显示边框 */',
+    '/* 示例 — 由于 Tailwind 优先级较高，需要使用 !important */\n\n/* 选中的顶部标签。不设置这些变量则保持当前外观。 */\n.top-tab[data-active="true"] {\n  --top-tab-active-bg: #2563eb;\n  --top-tab-active-fg: #ffffff;\n  --top-tab-active-border: #1d4ed8;\n}\n\n/* 隐藏顶部标签栏里的主机列表开关 */\n[data-section="top-tabs-host-tree-toggle"] {\n  width: 0 !important;\n  opacity: 0 !important;\n  pointer-events: none !important;\n}\n\n/* 隐藏打开快速切换器的加号按钮 */\n[data-section="top-tabs-quick-switcher-toggle"] {\n  display: none !important;\n}\n\n/* SFTP / 操作侧栏边框（关闭侧栏后不会残留） */\n[data-section="terminal-side-panel"] {\n  border: 2px solid #00c851 !important;\n  border-radius: 6px !important;\n}\n\n/* 修改整个操作侧栏背景，而不只是顶部标签 */\n[data-section="terminal-side-panel"],\n[data-section="terminal-side-panel-tabs"],\n[data-section="terminal-side-panel-content"],\n[data-section="terminal-sftp-panel"],\n[data-section="terminal-sftp-pane"],\n[data-section="terminal-sftp-list"],\n[data-section="terminal-sftp-tree"],\n[data-section="terminal-sftp-transfer-queue"] {\n  background-color: #1c384a !important;\n}\n\n/* 修改选中的 SFTP 文件行 */\n[data-section="terminal-sftp-list-row"][data-selected="true"] {\n  background-color: #00c851 !important;\n  color: #001b10 !important;\n}\n\n/* 加粗分屏分割线 */\n[data-section="terminal-split-resizer-bar"] {\n  background-color: hsl(var(--primary)) !important;\n  transform: scale(2) !important;\n}\n\n/* 高亮当前聚焦的分屏 */\n[data-section="terminal-split-pane"][data-focused="true"] {\n  outline: 2px solid hsl(var(--primary)) !important;\n  outline-offset: -2px;\n}\n\n/* 也可在 设置 → 终端 → 工作区聚焦指示 → 聚焦窗格显示边框 */',
   'settings.appearance.language': '语言',
   'settings.appearance.language.desc': '选择界面语言',
   'settings.appearance.uiFont': '界面字体',
@@ -769,6 +785,7 @@ export const zhCNCoreMessages: Messages = {
   'vault.hosts.moveSelected': '移动到分组 ({count})',
   'vault.hosts.moveSelected.description': '将选中的主机移动到现有分组，也可移出分组。选中的分组本身不会移动。',
   'vault.hosts.moveMultiple.success': '已将 {count} 个主机移动到 {group}',
+  'vault.hosts.dragSelectionCount': '{count} 个主机',
   'vault.hosts.moveToGroup.success': '已将 {host} 移动到 {group}',
   'vault.hosts.errors.nameRequired': '主机名称不能为空。',
   'vault.hosts.empty.title': '设置你的主机',
@@ -1018,6 +1035,7 @@ export const zhCNCoreMessages: Messages = {
   'sftp.transfers.openTargetFolder': '打开目标目录',
   'sftp.transfers.openTargetFolderError': '无法打开目标目录',
   'sftp.transfers.copyTargetPath': '复制目标路径',
+  'sftp.transfers.cleanupWarnings': '备份清理警告：{count}。展开文件列表查看详情。',
   'sftp.transfers.copyTargetPathSuccess': '已复制目标路径',
   'sftp.transfers.copyTargetPathError': '无法复制目标路径',
   'sftp.transfers.pathConflict.title': '无法开始传输',
@@ -1123,6 +1141,10 @@ export const zhCNCoreMessages: Messages = {
 
   // Quick Switcher
   'qs.search.placeholder': '搜索主机或标签页',
+  'qs.quickConnectTo': '快速连接到 {target}',
+  'qs.hosts': '主机',
+  'qs.tabs': '标签页',
+  'qs.newWorkspace': '新建工作区',
   'qs.jumpTo': '跳转到',
   'qs.localTerminal': '本地终端',
   'qs.localShells': '本地 Shell',

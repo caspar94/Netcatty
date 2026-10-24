@@ -1,6 +1,15 @@
 import type { Messages } from '../types';
 
 export const esTerminalMessages: Messages = {
+  'terminal.toolbar.openSessionLog': 'Abrir registro de sesión',
+  'terminal.toolbar.sessionLogActions': 'Acciones del registro',
+  'terminal.toolbar.sessionLog.menu': 'Registro de sesión',
+  'terminal.toolbar.sessionLog.open': 'Abrir',
+  'terminal.toolbar.sessionLog.reveal': 'Mostrar en carpeta',
+  'terminal.toolbar.sessionLog.chooseApplication': 'Abrir con…',
+  'terminal.toolbar.sessionLog.systemDefault': 'Abrir con la aplicación predeterminada',
+  'terminal.toolbar.openSessionLogFailed': 'No se pudo abrir el registro.',
+
   'terminal.menu.saveScreen': 'Guardar pantalla actual',
   'terminal.saveScreen.failed': 'No se pudo guardar la pantalla del terminal.',
   // Diálogo de confirmación de pegado multilínea (#3398)
@@ -68,6 +77,8 @@ export const esTerminalMessages: Messages = {
   'terminal.composeBar.send': 'Enviar',
   'terminal.composeBar.close': 'Cerrar barra de redacción',
   'terminal.composeBar.broadcasting': 'Difundiendo a todas las sesiones',
+  'terminal.composeBar.sendToAll': 'Enviar a todas las sesiones',
+  'terminal.composeBar.sendToActive': 'Enviar solo a la sesión activa',
   'terminal.composeBar.broadcastAllowPassword': 'Difundir sin protección de contraseña',
   'terminal.composeBar.resize': 'Cambiar la altura de la barra de redacción',
   'terminal.composeBar.manageSnippets': 'Administrar snippets rápidos',
@@ -109,6 +120,8 @@ export const esTerminalMessages: Messages = {
   'terminal.serverStats.cpu': 'Uso de CPU',
   'terminal.serverStats.cpuCores': 'Uso de núcleos de CPU',
   'terminal.serverStats.gpu': 'Uso de GPU',
+  'terminal.serverStats.gpuDevices': 'Uso de cada GPU',
+  'terminal.serverStats.gpuIndex': 'GPU {{index}}',
   'terminal.serverStats.memory': 'Uso de memoria',
   'terminal.serverStats.memoryDetails': 'Detalles de memoria',
   'terminal.serverStats.memUsed': 'Usada',
@@ -828,6 +841,7 @@ export const esTerminalMessages: Messages = {
   'serial.field.flowControl': 'Control de flujo',
   'serial.noPorts': 'No se detectaron puertos seriales. Conecta un dispositivo y actualiza.',
   'serial.field.customPort': 'Ruta de puerto personalizada',
+  'serial.field.namedPipeHint': 'Consola de VM en Windows: introduce \\\\.\\pipe\\name. La VM debe crear la canalización como servidor. Se ignoran la velocidad y la trama.',
   'serial.field.customPortPlaceholder': 'p. ej., /dev/ttys001 o COM1',
   'serial.type.hardware': 'Hardware',
   'serial.type.pseudo': 'Pseudoterminal',
@@ -872,11 +886,13 @@ export const esTerminalMessages: Messages = {
   'keyboard.interactive.desc': 'El servidor requiere autenticación adicional.',
   'keyboard.interactive.descWithHost': 'El servidor {hostname} requiere autenticación adicional.',
   'keyboard.interactive.response': 'Respuesta',
+  'keyboard.interactive.verificationCode': 'Código de verificación',
   'keyboard.interactive.enterCode': 'Ingresa el código de verificación',
   'keyboard.interactive.enterResponse': 'Ingresa la respuesta',
   'keyboard.interactive.submit': 'Enviar',
   'keyboard.interactive.verifying': 'Verificando...',
   'keyboard.interactive.savePassword': 'Guardar contraseña',
+  'keyboard.interactive.fillTotp': 'Rellenar código de verificación',
 
   // Passphrase Modal for encrypted SSH keys
   'passphrase.title': 'Frase de contraseña de la clave SSH',

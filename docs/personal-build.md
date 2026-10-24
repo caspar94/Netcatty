@@ -1,8 +1,16 @@
 # Caspar94 personal build
 
-Base release: Netcatty v1.1.84 (`9ce0b5958335e7addd3a6d980ee20e5dcfc526b9`).
-Personal version: `1.1.84-C1`.
+Base: upstream main at `7dcb52062f65a321883be163ee11d74d895f48bb` (v1.1.86 release metadata).
+Personal version: `1.1.86-C1`.
 Repository: https://github.com/caspar94/Netcatty
+
+## Upstream merge for 1.1.86-C1
+
+Merged upstream main while preserving the personal performance changes and
+build workflow. External SDK warning and error localization now uses upstream
+translation while retaining the personal batched text/thinking flush behavior.
+Historical validation below applies only to 1.1.84-C1. Validation for this merge
+is recorded in the pull request.
 
 ## Retained optimizations
 

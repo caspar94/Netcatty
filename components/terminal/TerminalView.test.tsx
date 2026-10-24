@@ -220,7 +220,6 @@ test("disconnected terminal reconnects on plain Enter when input is not claimed 
       key: "Enter",
       status: "disconnected",
       hasRetryHandler: true,
-      isComposeBarOpen: false,
       needsAuth: false,
       needsHostKeyVerification: false,
       hasBlockingOverlay: false,
@@ -234,7 +233,6 @@ test("terminal enter reconnect ignores active controls and non-disconnected stat
     key: "Enter",
     status: "disconnected" as const,
     hasRetryHandler: true,
-    isComposeBarOpen: false,
     needsAuth: false,
     needsHostKeyVerification: false,
     hasBlockingOverlay: false,
@@ -243,14 +241,16 @@ test("terminal enter reconnect ignores active controls and non-disconnected stat
   assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, status: "connected" }), false);
   assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, key: "a" }), false);
   assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, hasRetryHandler: false }), false);
-  // Open search must not globally suppress Enter reconnect / the hint (#2546).
+  // Open search and an open compose bar must not globally suppress Enter
+  // reconnect / the hint (#2546 / #3767).
   assert.equal(shouldReconnectTerminalOnEnterKey({ ...base }), true);
-  assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, isComposeBarOpen: true }), false);
   assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, needsAuth: true }), false);
   assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, needsHostKeyVerification: true }), false);
   assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, hasBlockingOverlay: true }), false);
   assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, isReconnectActive: true }), false);
   assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, altKey: true }), false);
+  assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, shiftKey: true }), false);
+  assert.equal(shouldReconnectTerminalOnEnterKey({ ...base, isComposing: true }), false);
 });
 
 test("terminal enter reconnect ignores interactive controls outside xterm only", () => {
@@ -652,6 +652,16 @@ test("terminal boot is cancelable and closes eagerly on cleanup", () => {
   );
   // Owner panes close the pending backend; attach popups only dispose xterm.
   assert.match(neverConnectedBranch, /if \(!attachExistingSession\)/);
+  const emptySessionBranch = readFileSync(new URL("../Terminal.tsx", import.meta.url), "utf8");
+  const emptyStart = emptySessionBranch.indexOf("if (!closingSessionId)");
+  const emptyEnd = emptySessionBranch.indexOf("Observe/attach popups must not kill", emptyStart);
+  const emptyBranch = emptySessionBranch.slice(emptyStart, emptyEnd);
+  const attachGuardAt = emptyBranch.indexOf("if (attachExistingSession)");
+  const emptyCloseAt = emptyBranch.indexOf("terminalBackend.closeSession(");
+  assert.ok(
+    attachGuardAt !== -1 && emptyCloseAt !== -1 && attachGuardAt < emptyCloseAt,
+    "a second attach cleanup after sessionRef is cleared must not closeSession",
+  );
   assert.match(effectsSource, /let ownedRuntime:/);
   assert.match(
     cleanup,
@@ -730,4 +740,12 @@ test("terminal theme updates force xterm renderer to repaint immediately", () =>
   assert.match(source, /applyTerminalThemeSync\(term, effectiveTheme\)/);
   assert.match(schedulerSource, /term\.options\.theme = \{/);
   assert.match(schedulerSource, /forceSyncRenderAfterResize\(term\)/);
+});
+
+test("SFTP context action reuses the pane toolbar handler and its availability", () => {
+  const source = readFileSync(new URL("./TerminalView.tsx", import.meta.url), "utf8");
+  const terminalSource = readFileSync(new URL("../Terminal.tsx", import.meta.url), "utf8");
+  assert.match(source, /onOpenSftp=\{status === "connected" && !isSerialConnection && !host\?\.id\?\.startsWith\("serial-"\) && !isPluginHostProtocol\(host\?\.protocol\) \? ctx\.handleOpenSFTP : undefined\}/);
+  assert.match(terminalSource, /onOpenSFTP=\{handleOpenSFTP\}/);
+  assert.match(terminalSource, /<TerminalView ctx=\{\{[^\n]*handleOpenSFTP,/);
 });

@@ -1,17 +1,31 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, Copy, HelpCircle, RefreshCw } from "lucide-react";
+import { HelpCircle, RefreshCw } from "lucide-react";
 import { useI18n } from "../../../../application/i18n/I18nProvider";
 import {
+  readExternalMcpApprovalAlertMode,
   readExternalMcpFocusOnHostOpen,
   readExternalMcpIdleTimeoutMinutes,
   readExternalMcpMode,
   readExternalMcpSilentSessions,
   readSessionIdleTimeoutMinutes,
+  writeExternalMcpApprovalAlertMode,
   writeExternalMcpFocusOnHostOpen,
   writeExternalMcpIdleTimeoutMinutes,
   writeExternalMcpMode,
   writeExternalMcpSilentSessions,
   writeSessionIdleTimeoutMinutes,
+  readExternalMcpHttpAllowCustomBind,
+  readExternalMcpHttpClientHost,
+  readExternalMcpHttpEnabled,
+  readExternalMcpHttpListenAddress,
+  readExternalMcpHttpPort,
+  writeExternalMcpHttpAllowCustomBind,
+  writeExternalMcpHttpClientHost,
+  writeExternalMcpHttpEnabled,
+  writeExternalMcpHttpListenAddress,
+  writeExternalMcpHttpPort,
+  type ExternalMcpApprovalAlertMode,
+  type ExternalMcpHttpSettings,
   type ExternalMcpMode,
   useExternalMcpToggleState,
 } from "../../../../application/state/useExternalMcpToggleState";
@@ -19,69 +33,13 @@ import { cn } from "../../../../lib/utils";
 import { Button } from "../../../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../ui/tooltip";
 import { Select, SettingCard, SettingRow, Toggle } from "../../../settings/settings-ui";
+import { CopyableCodeBlock } from "./CopyableCodeBlock";
+import { ExternalMcpHttpSection, type ExternalMcpHttpViewStatus } from "./ExternalMcpHttpSection";
 import { getBridge } from "./types";
 
 type ExternalMcpClient = "codex" | "claude" | "grok" | "cursor" | "other";
 
 const CLIENT_TABS: ExternalMcpClient[] = ["codex", "claude", "grok", "cursor", "other"];
-
-type CopyableCodeBlockProps = {
-  label?: string;
-  value: string;
-  copyKey: string;
-  copied: string | null;
-  onCopy: (key: string, text: string) => void;
-  copyLabel: string;
-  copiedLabel: string;
-  emptyLabel?: string;
-  className?: string;
-};
-
-const CopyableCodeBlock: React.FC<CopyableCodeBlockProps> = ({
-  label,
-  value,
-  copyKey,
-  copied,
-  onCopy,
-  copyLabel,
-  copiedLabel,
-  emptyLabel,
-  className,
-}) => {
-  const display = value || emptyLabel || "";
-  const canCopy = Boolean(value);
-  const isCopied = copied === copyKey;
-
-  return (
-    <div className={cn("space-y-1.5", className)}>
-      {label ? (
-        <div className="text-xs font-medium text-muted-foreground">{label}</div>
-      ) : null}
-      <div className="group relative rounded-md border border-border/60 bg-muted/20">
-        <pre
-          className={cn(
-            "max-h-40 overflow-auto whitespace-pre-wrap break-all px-3 py-2.5 pr-11 font-mono text-xs leading-5",
-            !value && "text-muted-foreground",
-          )}
-        >
-          {display}
-        </pre>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={!canCopy}
-          className="absolute right-1.5 top-1.5 h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
-          onClick={() => void onCopy(copyKey, value)}
-          aria-label={isCopied ? copiedLabel : copyLabel}
-          title={isCopied ? copiedLabel : copyLabel}
-        >
-          {isCopied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
-        </Button>
-      </div>
-    </div>
-  );
-};
 
 type ExternalMcpStatus = {
   ok: boolean;
@@ -97,6 +55,7 @@ type ExternalMcpStatus = {
   sessionIdleTimeoutMinutes?: number;
   permissionMode?: string;
   error?: string | null;
+  http?: ExternalMcpHttpViewStatus | null;
 };
 
 type ClientSetupStatus = {
@@ -293,12 +252,23 @@ export function buildCursorSnippet(launcherPath: string, discoveryPath?: string 
 
 export const ExternalMcpCard: React.FC = () => {
   const { t } = useI18n();
-  const { enabled, setEnabled } = useExternalMcpToggleState();
+  const { enabled, setEnabled, error: configError } = useExternalMcpToggleState();
   const [mode, setModeRaw] = useState<ExternalMcpMode>(() => readExternalMcpMode());
   const [idleTimeoutMinutes, setIdleTimeoutRaw] = useState<number>(() => readExternalMcpIdleTimeoutMinutes());
   const [focusOnHostOpen, setFocusOnHostOpenRaw] = useState<boolean>(() => readExternalMcpFocusOnHostOpen());
+  const [approvalAlert, setApprovalAlertRaw] = useState<ExternalMcpApprovalAlertMode>(
+    () => readExternalMcpApprovalAlertMode(),
+  );
   const [sessionIdleTimeoutMinutes, setSessionIdleTimeoutRaw] = useState<number>(() => readSessionIdleTimeoutMinutes());
   const [silentSessions, setSilentSessionsRaw] = useState<boolean>(() => readExternalMcpSilentSessions());
+  const [httpSettings, setHttpSettings] = useState<ExternalMcpHttpSettings>(() => ({
+    enabled: readExternalMcpHttpEnabled(),
+    port: readExternalMcpHttpPort(),
+    allowCustomBind: readExternalMcpHttpAllowCustomBind(),
+    listenAddress: readExternalMcpHttpListenAddress(),
+    clientHost: readExternalMcpHttpClientHost(),
+  }));
+  const [isRotatingHttpToken, setIsRotatingHttpToken] = useState(false);
   const [status, setStatus] = useState<ExternalMcpStatus | null>(null);
   const [selectedClient, setSelectedClient] = useState<ExternalMcpClient>("codex");
   const [codexStatus, setCodexStatus] = useState<ClientSetupStatus | null>(null);
@@ -344,9 +314,49 @@ export const ExternalMcpCard: React.FC = () => {
     writeExternalMcpFocusOnHostOpen(nextFocusOnHostOpen);
   }, []);
 
+  const setApprovalAlert = useCallback((next: ExternalMcpApprovalAlertMode) => {
+    setApprovalAlertRaw(writeExternalMcpApprovalAlertMode(next));
+  }, []);
+
   const setSilentSessions = useCallback((nextSilentSessions: boolean) => {
     setSilentSessionsRaw(nextSilentSessions);
     writeExternalMcpSilentSessions(nextSilentSessions);
+  }, []);
+
+  const applyHttpSettings = useCallback(async (next: ExternalMcpHttpSettings) => {
+    const normalized: ExternalMcpHttpSettings = {
+      enabled: writeExternalMcpHttpEnabled(next.enabled),
+      port: writeExternalMcpHttpPort(next.port),
+      allowCustomBind: writeExternalMcpHttpAllowCustomBind(next.allowCustomBind),
+      listenAddress: writeExternalMcpHttpListenAddress(next.listenAddress),
+      clientHost: writeExternalMcpHttpClientHost(next.clientHost),
+    };
+    setHttpSettings(normalized);
+    const nextStatus = await getBridge()?.externalMcpSetConfig?.({
+      httpEnabled: normalized.enabled,
+      httpPort: normalized.port,
+      httpAllowCustomBind: normalized.allowCustomBind,
+      httpListenAddress: normalized.listenAddress,
+      httpClientHost: normalized.clientHost,
+    });
+    if (nextStatus && typeof nextStatus === "object") {
+      setStatus(nextStatus as ExternalMcpStatus);
+    }
+  }, []);
+
+  const rotateHttpToken = useCallback(async () => {
+    const bridge = getBridge();
+    if (!bridge?.externalMcpSetConfig) return;
+    setIsRotatingHttpToken(true);
+    setActionMessage(null);
+    try {
+      const nextStatus = await bridge.externalMcpSetConfig({ rotateHttpToken: true });
+      if (nextStatus && typeof nextStatus === "object") {
+        setStatus(nextStatus as ExternalMcpStatus);
+      }
+    } finally {
+      setIsRotatingHttpToken(false);
+    }
   }, []);
 
   const refreshStatus = useCallback(async (options?: { quiet?: boolean; clients?: boolean }) => {
@@ -671,8 +681,7 @@ export const ExternalMcpCard: React.FC = () => {
           checked={enabled}
           onChange={(nextEnabled) => {
             setActionMessage(null);
-            setEnabled(nextEnabled);
-            window.setTimeout(() => { void refreshStatus(); }, 0);
+            void setEnabled(nextEnabled).then(() => refreshStatus());
           }}
         />
       </div>
@@ -698,6 +707,24 @@ export const ExternalMcpCard: React.FC = () => {
       </div>
 
       <SettingCard divided className="rounded-md border-border/60 bg-background/70">
+        <SettingRow
+          anchorId="ai-external-mcp-approval-alert"
+          label={t("ai.externalMcp.approvalAlert")}
+          description={t("ai.externalMcp.approvalAlert.description")}
+        >
+          <Select
+            value={approvalAlert}
+            options={[
+              { value: "always", label: t("ai.externalMcp.approvalAlert.always") },
+              { value: "unfocused", label: t("ai.externalMcp.approvalAlert.unfocused") },
+              { value: "off", label: t("ai.externalMcp.approvalAlert.off") },
+            ]}
+            onChange={(value) => setApprovalAlert(
+              value === "always" || value === "off" ? value : "unfocused",
+            )}
+            className="w-40"
+          />
+        </SettingRow>
         <SettingRow
           label={t("ai.externalMcp.mode")}
           description={t("ai.externalMcp.mode.description")}
@@ -777,6 +804,17 @@ export const ExternalMcpCard: React.FC = () => {
           </div>
         </SettingRow>
       </SettingCard>
+
+      <ExternalMcpHttpSection
+        externalMcpEnabled={enabled}
+        settings={httpSettings}
+        status={status?.http || null}
+        copied={copied}
+        rotating={isRotatingHttpToken}
+        onCopy={copyText}
+        onChange={(next) => { void applyHttpSettings(next); }}
+        onRotateToken={() => { void rotateHttpToken(); }}
+      />
 
       <div className="space-y-2">
         <div className="flex min-h-8 items-center justify-between gap-2">
@@ -950,8 +988,8 @@ export const ExternalMcpCard: React.FC = () => {
           {actionMessage.text}
         </div>
       ) : null}
-      {status?.error ? (
-        <div className="text-xs text-destructive">{status.error}</div>
+      {configError || status?.error ? (
+        <div role="alert" className="text-xs text-destructive">{configError || status?.error}</div>
       ) : null}
     </div>
   );

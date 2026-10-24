@@ -60,7 +60,7 @@ import { MULTILINE_PASTE_CONFIRM_MIN_LINES_DEFAULT } from "../domain/terminalPas
 import { isPluginHostProtocol } from "../domain/pluginConnection";
 import { clearTerminalBootEpoch, setTerminalBootEpoch } from "../domain/terminalBootEpoch";
 import {
-  appendTerminalPromptSecurityTail,
+  foldTerminalPromptSecurityOutput,
   isConfirmedTerminalShellPrompt,
   isUntrustedTerminalInputPrompt,
 } from "../domain/terminalPromptSecurity";
@@ -74,6 +74,7 @@ import {
 } from "../application/state/terminalAutoReconnect";
 import { useStoredBoolean } from "../application/state/useStoredBoolean";
 import { readOptionalStoredStringValue, useStoredString } from "../application/state/useStoredString";
+import { performSessionLogAction, type SessionLogAction } from "../application/state/sessionLogActions";
 import { useSessionLogBackend } from "../application/state/useSessionLogBackend";
 import { useTerminalLayoutSuppressActive } from "../application/state/terminalLayoutSuppressStore";
 import { useAppearanceChromeStore } from "../application/state/appearanceChromeStore";
@@ -164,8 +165,12 @@ import {
 import { clearKittyKeyboardBroadcastSession } from "./terminal/runtime/kittyKeyboardBroadcast";
 import { registerTerminalSensitiveInputReader } from "./terminal/runtime/terminalSensitiveInputRegistry";
 import { registerTerminalCommandInjectionReadyReader } from "./terminal/runtime/terminalCommandInjectionReadyRegistry";
-import { isIdleShellReadyForCommandInjection } from "../domain/terminalCommandInjectionReady";
+import {
+  isIdleShellReadyForCommandInjection,
+  isShellPromptReadyForInsertion,
+} from "../domain/terminalCommandInjectionReady";
 import { detectPrompt } from "./terminal/autocomplete/promptDetector";
+import type { SensitiveInputActiveRef } from "./terminal/autocomplete/terminalAutocompletePrompt";
 import {
   applyUserCursorPreference,
   applyUserCursorWidthPreference,
@@ -239,6 +244,7 @@ import {
 import {
   canHibernateTerminalRuntimeSession,
   canHibernateTerminalRuntimeStatus,
+  decideHiddenTabKeepCountAction,
   isTerminalFileTransferActive,
   resolveHibernateKeepRendererCount,
   resolveHibernatePreferWasmSerialize,
@@ -250,6 +256,7 @@ import {
 } from "../domain/terminalHibernate";
 import { getLastChar, removeLastChar } from "../domain/serialCharMetrics";
 import { stringCellWidth } from "./terminal/autocomplete/terminalStringCellWidth";
+import { retainLeavingTabAfterEviction } from "../application/state/hiddenTabEviction";
 import { terminalHiddenRendererStore } from "../application/state/terminalHiddenRendererStore";
 import {
   wakeTerminalFromHibernate,
@@ -360,6 +367,8 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   onOpenTheme,
   onOpenSystem,
   isBroadcastEnabled,
+  composeSendToAll,
+  onToggleComposeSendTarget,
   onToggleBroadcast,
   onToggleComposeBar,
   isWorkspaceComposeBarOpen,
@@ -440,7 +449,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const recorder = useScriptRecorder(sessionId);
   const recorderRef = useRef(recorder);
   recorderRef.current = recorder;
-  const passwordPromptActiveRef = useRef(false);
+  const passwordPromptActiveRef = useRef(false) as SensitiveInputActiveRef;
   const terminalTitleRef = useRef<string | undefined>(undefined);
   const pluginTerminalLifecycleRef = useRef<ReturnType<typeof usePluginTerminalSessionLifecycle> | null>(null);
   useEffect(() => registerTerminalSensitiveInputReader(
@@ -449,6 +458,8 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   ), [sessionId]);
   useEffect(() => () => clearTerminalBroadcastUserInput(sessionId), [sessionId]);
   const sensitivePromptOutputTailRef = useRef("");
+  const heredocPromptOriginRef = useRef("");
+  const promptSecurityPendingCrRef = useRef(false);
   const [activeScriptRun, setActiveScriptRun] = useState<import('@/types/global/netcatty-bridge-script.d.ts').ScriptRun | undefined>(undefined);
   const dismissedScriptRunIdsRef = useRef(new Set<string>());
 
@@ -514,6 +525,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const hibernateAlternateScreenRef = useRef(false);
   const hibernateRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fullHibernateRuntimeRef = useRef<(() => Promise<boolean>) | null>(null);
+  const hibernateEvictionAttemptRef = useRef(0);
   const wakeSoftHiddenRuntimeRef = useRef<(() => void) | null>(null);
   const resumeRendererAfterCancelledHibernateUpgradeRef = useRef<(() => void) | null>(null);
   const wakeInProgressRef = useRef(false);
@@ -600,18 +612,21 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const onTerminalDataCaptureRef = useRef(onTerminalDataCapture);
   const onSessionExitRef = useRef(onSessionExit);
   const commandBufferRef = useRef<string>("");
-  useEffect(() => registerTerminalCommandInjectionReadyReader(sessionId, () => {
+  useEffect(() => registerTerminalCommandInjectionReadyReader(sessionId, (options) => {
     const term = termRef.current;
     if (!term) return false;
     const prompt = detectPrompt(term);
-    return isIdleShellReadyForCommandInjection({
+    const readiness = {
       sensitiveInputActive: passwordPromptActiveRef.current,
       hasLiveTerminal: true,
       alternateScreenActive: isTerminalAlternateScreenActive(term),
       isAtPrompt: prompt.isAtPrompt,
       userInputLength: prompt.userInput.length,
       pendingTypedInputLength: commandBufferRef.current.length,
-    });
+    };
+    return options?.allowDraft
+      ? isShellPromptReadyForInsertion(readiness)
+      : isIdleShellReadyForCommandInjection(readiness);
   }), [sessionId]);
   const promptLineBreakStateRef = useRef<PromptLineBreakState>(createPromptLineBreakState());
   const [hasMouseTracking, setHasMouseTracking] = useState(false);
@@ -898,6 +913,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const [isCancelling, setIsCancelling] = useState(false);
   const [showSFTP, setShowSFTP] = useState(false);
   const [isSessionLogging, setIsSessionLogging] = useState(false);
+  const [canOpenSessionLog, setCanOpenSessionLog] = useState(false);
   const [progressValue, setProgressValue] = useState(CONNECTION_PROGRESS_START);
   const [isDisconnectedDialogDismissed, setIsDisconnectedDialogDismissed] = useState(false);
   const [connectionReuseFellBack, setConnectionReuseFellBack] = useState(false);
@@ -1163,7 +1179,17 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     allowRendererFallback?: boolean;
     requireActiveShellCwd?: boolean;
   }): Promise<string | undefined> => {
-    const skipBackendPwd = hostRestrictsExtraSshChannels(host);
+    // The backend pwd probe opens an exec channel on the terminal connection;
+    // network devices (mode, detected distro, or vendor banner such as Huawei
+    // `-`) can drop the whole session for it (#1043, #3631).
+    let skipBackendPwd = hostRestrictsExtraSshChannels(host);
+    if (!skipBackendPwd && sessionRef.current) {
+      const info = await terminalBackend.getSessionRemoteInfo?.(sessionRef.current).catch(() => null);
+      skipBackendPwd = !shouldProbeSessionCwd({
+        isNetworkDevice: classifyDistroId(host.distro) === 'network-device',
+        remoteSshVersion: info?.remoteSshVersion,
+      });
+    }
     const cwd = await resolvePreferredTerminalCwd({
       rendererCwd: terminalCwdTracker.getRendererCwd(),
       rendererCwdSource: terminalCwdTracker.getRendererCwdSource(),
@@ -1176,7 +1202,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       requireActiveShellCwd: options?.requireActiveShellCwd,
     });
     return cwd ?? undefined;
-  }, [terminalBackend, terminalCwdTracker]);
+  }, [host, terminalBackend, terminalCwdTracker]);
 
   const clearTerminalCwd = useCallback((options?: { persistRestoreMetadata?: boolean }) => {
     terminalCwdTracker.clearRendererCwd();
@@ -1596,7 +1622,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     const capturedData = options?.finalized
       ? data
       : (finalizeTerminalLogData() || data);
-    captureHandler(capturedSessionId, capturedData);
+    return captureHandler(capturedSessionId, capturedData);
   }, [finalizeTerminalLogData]);
 
   const attachHomeWebContentsIdRef = useRef<number | null | undefined>(undefined);
@@ -1686,6 +1712,9 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         }
         if (typeof payload.passwordPromptActive === "boolean") {
           passwordPromptActiveRef.current = payload.passwordPromptActive;
+          // The snapshot boolean has no source. A restored true latch stays
+          // explicit so Email:/Username: cannot bypass a plugin-marked field.
+          if (payload.passwordPromptActive) passwordPromptActiveRef.source = "explicit";
         }
         if (payload.cwd !== undefined) {
           const cwd = terminalCwdTracker.setRendererCwd(payload.cwd, "snapshot");
@@ -1771,6 +1800,14 @@ const TerminalComponent: React.FC<TerminalProps> = ({
 
     if (!closingSessionId) {
       disposeSessionListeners();
+      // Close preparation already cleared sessionRef after the display handoff.
+      // Unmount teardown calls cleanup again. An attach popup must not
+      // closeSession on that second pass: worker mode emits netcatty:exit to
+      // the home renderer before the boot-epoch check, which drops home input
+      // (sessionRef = null) while a mismatched epoch leaves the PTY alive.
+      if (attachExistingSession) {
+        return;
+      }
       // Still notify main so in-flight SSH passphrase prompts for this UI
       // sessionId are aborted even before a backend session was attached.
       try {
@@ -1940,10 +1977,11 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   }, [sessionId]);
 
   const forceCloseHibernatedSession = useCallback(() => {
+    let pendingCapture: void | Promise<void>;
     if (!terminalDataCapturedRef.current) {
       const hibernatedData = hibernateSnapshotRef.current + hibernatePendingBufferRef.current;
       if (hibernatedData) {
-        handleTerminalDataCaptureOnce(sessionId, hibernatedData);
+        pendingCapture = handleTerminalDataCaptureOnce(sessionId, hibernatedData);
       }
     }
     disposeDataRef.current?.();
@@ -1986,16 +2024,21 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     }
     sessionRef.current = null;
     clearHibernateRuntimeState();
+    return pendingCapture;
   }, [attachAuthorization, attachExistingSession, clearHibernateRuntimeState, handleTerminalDataCaptureOnce, sessionId, terminalBackend]);
 
   const observeTerminalInputPrompt = useCallback((
     chunk: string,
     meta?: TerminalSessionDataMeta,
   ) => {
-    sensitivePromptOutputTailRef.current = appendTerminalPromptSecurityTail(
-      sensitivePromptOutputTailRef.current,
-      chunk,
-    );
+    const folded = foldTerminalPromptSecurityOutput({
+      origin: heredocPromptOriginRef.current,
+      current: sensitivePromptOutputTailRef.current,
+      pendingCr: promptSecurityPendingCrRef.current,
+    }, chunk);
+    heredocPromptOriginRef.current = folded.origin;
+    sensitivePromptOutputTailRef.current = folded.current;
+    promptSecurityPendingCrRef.current = folded.pendingCr;
     const promptSecurityOptions = {
       allowHostStyleGreaterThan: isNetworkDevice,
       alternateScreen: termRef.current
@@ -2004,23 +2047,30 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     };
     if (typeof meta?.pluginPipelineSensitiveInput === "boolean") {
       passwordPromptActiveRef.current = meta.pluginPipelineSensitiveInput;
+      // Authoritative metadata must not be downgraded to the heuristic latch,
+      // or trusted labels such as Email: would bypass snippet blocking.
+      passwordPromptActiveRef.source = meta.pluginPipelineSensitiveInput ? "explicit" : "heuristic";
       if (meta.pluginPipelineSensitiveInput) {
         autocompleteCloseRef.current?.();
       } else {
         sensitivePromptOutputTailRef.current = "";
+        heredocPromptOriginRef.current = "";
+        promptSecurityPendingCrRef.current = false;
       }
       return;
     } else if (isUntrustedTerminalInputPrompt(
-      sensitivePromptOutputTailRef.current,
+      folded.promptText,
       promptSecurityOptions,
     )) {
       passwordPromptActiveRef.current = true;
+      passwordPromptActiveRef.source = "heuristic";
       autocompleteCloseRef.current?.();
     } else if (isConfirmedTerminalShellPrompt(
-      sensitivePromptOutputTailRef.current,
+      folded.promptText,
       promptSecurityOptions,
     )) {
       passwordPromptActiveRef.current = false;
+      passwordPromptActiveRef.source = "heuristic";
     }
   }, [isNetworkDevice]);
 
@@ -2251,20 +2301,6 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   ]);
   fullHibernateRuntimeRef.current = fullHibernateRuntime;
 
-  const upgradeSoftHiddenRuntimeToHibernate = useCallback(() => {
-    if (!wakeSoftHiddenRuntimeRef.current) return;
-    wakeSoftHiddenRuntimeRef.current?.();
-    void fullHibernateRuntime().then(
-      (completed) => {
-        if (!completed) resumeRendererAfterCancelledHibernateUpgradeRef.current?.();
-      },
-      (error) => {
-        logger.error("[Terminal] Failed to upgrade soft-hidden runtime to hibernate", { sessionId, error });
-        resumeRendererAfterCancelledHibernateUpgradeRef.current?.();
-      },
-    );
-  }, [fullHibernateRuntime, sessionId]);
-
   const hideRuntimeOnly = useCallback(() => {
     if (hibernatedRef.current || softHiddenRef.current || !hasRuntimeRef.current) return;
     xtermRuntimeRef.current?.suspendWebglRenderer();
@@ -2272,6 +2308,39 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     softHiddenRef.current = true;
     logger.info("[Terminal] Soft-hidden runtime", { sessionId });
   }, [sessionId]);
+
+  const upgradeSoftHiddenRuntimeToHibernate = useCallback(() => {
+    const pendingEviction = terminalHiddenRendererStore.hasPendingEviction(sessionId);
+    if (!wakeSoftHiddenRuntimeRef.current) {
+      terminalHiddenRendererStore.settleEviction(sessionId, false);
+      return;
+    }
+    wakeSoftHiddenRuntimeRef.current?.();
+    void fullHibernateRuntime().then(
+      (completed) => {
+        if (!completed) {
+          resumeRendererAfterCancelledHibernateUpgradeRef.current?.();
+          // Wake already dropped the marker. Restore the soft-hidden slot only
+          // while this tab is still hidden and hibernate is still enabled.
+          // Selecting the victim during the drain makes fullHibernateRuntime
+          // return false because the tab is visible; soft-hiding it again
+          // would hide the tab the user just opened.
+          if (pendingEviction && !isVisibleRef.current && hibernateEnabledRef.current) {
+            hideRuntimeOnly();
+          }
+        }
+        terminalHiddenRendererStore.settleEviction(sessionId, completed);
+      },
+      (error) => {
+        logger.error("[Terminal] Failed to upgrade soft-hidden runtime to hibernate", { sessionId, error });
+        resumeRendererAfterCancelledHibernateUpgradeRef.current?.();
+        if (pendingEviction && !isVisibleRef.current && hibernateEnabledRef.current) {
+          hideRuntimeOnly();
+        }
+        terminalHiddenRendererStore.settleEviction(sessionId, false);
+      },
+    );
+  }, [fullHibernateRuntime, hideRuntimeOnly, sessionId]);
 
   const hibernateRuntime = useCallback(() => {
     if (hibernatedRef.current || !termRef.current) return;
@@ -2287,8 +2356,14 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       return;
     }
 
+    // Disconnected sessions never stay soft-hidden. A connected session whose
+    // keep count dropped to zero takes the same upgrade. A positive count stays
+    // retained until a later leave evicts overflow.
     if (softHiddenRef.current) {
-      if (statusRef.current === "disconnected") {
+      const retainedKeepCount = statusRef.current === "connected"
+        ? resolveHibernateKeepRendererCount(terminalSettingsRef.current)
+        : 0;
+      if (statusRef.current === "disconnected" || !(retainedKeepCount > 0)) {
         upgradeSoftHiddenRuntimeToHibernate();
       }
       return;
@@ -2297,16 +2372,47 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     const keepCount = statusRef.current === "connected"
       ? resolveHibernateKeepRendererCount(terminalSettings)
       : 0;
-    if (keepCount > 0 && terminalHiddenRendererStore.getSoftHiddenCount() < keepCount) {
+    const keepDecision = decideHiddenTabKeepCountAction({
+      keepCount,
+      softHiddenCount: terminalHiddenRendererStore.getSoftHiddenOccupancy(),
+      sessionId,
+      candidatesOldestFirst: keepCount > 0
+        ? terminalHiddenRendererStore.listSoftHiddenOldestFirst()
+        : [],
+    });
+    if (keepDecision.action === "soft-hide") {
       hideRuntimeOnly();
       return;
     }
-
-    if (keepCount > 0) {
-      const victim = terminalHiddenRendererStore.pickEvictionCandidate(keepCount);
-      if (victim && victim !== sessionId) {
-        terminalHiddenRendererStore.requestEviction(victim);
-      }
+    if (keepDecision.action === "await-eviction") {
+      const attempt = ++hibernateEvictionAttemptRef.current;
+      // Reserves this tab's slot before the first await, then soft-hides only
+      // if a victim hibernate completes and the slot still fits. A sync marker
+      // clear is not enough: alt-screen and drain/snapshot failure restore the
+      // victim, and this tab stays out of the soft-hidden set.
+      void retainLeavingTabAfterEviction({
+        sessionId,
+        candidates: keepDecision.candidates,
+        keepCount,
+        // Re-read after the victim drain. The count above was captured when
+        // this timer fired; a zero or tighter setting must full-hibernate.
+        resolveKeepCount: () => (
+          statusRef.current === "connected"
+            ? resolveHibernateKeepRendererCount(terminalSettingsRef.current)
+            : 0
+        ),
+        stillWantsRetention: () => (
+          hibernateEvictionAttemptRef.current === attempt
+          && !isVisibleRef.current
+          && !hibernatedRef.current
+          && !softHiddenRef.current
+        ),
+        softHide: () => hideRuntimeOnly(),
+        fullHibernate: () => {
+          void fullHibernateRuntime();
+        },
+      });
+      return;
     }
 
     void fullHibernateRuntime();
@@ -2332,6 +2438,8 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   }), []);
 
   const xTermRuntimeContextRef = useRef<Omit<CreateXTermRuntimeContext, "container" | "initiallyVisible"> | null>(null);
+  const archiveHostRef = useRef(host);
+  archiveHostRef.current = host;
   const pluginDecorationRulesRef = useRef<readonly PluginTerminalDecorationRule[]>(Object.freeze([]));
   const pluginDecorationRefreshRef = useRef<(reason: string) => void>(() => {});
 
@@ -2421,7 +2529,12 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const pluginAwareOnCommandCompleted = useCallback(() => {
     pluginTerminalLifecycle.onCommandCompleted();
     void xtermRuntimeRef.current?.pluginProviderHost?.commandCompleted();
-  }, [pluginTerminalLifecycle]);
+    // Hibernate wake builds its runtime from this callback. Same local
+    // prompt-return refresh as useTerminalEffects (#1952).
+    if (host.protocol === "local") {
+      onCommandSubmitted?.("", host.id, host.label, sessionId);
+    }
+  }, [host.id, host.label, host.protocol, onCommandSubmitted, pluginTerminalLifecycle, sessionId]);
   const pluginAwareOnTerminalCwdChange = useCallback((
     changedSessionId: string,
     cwd: string | null,
@@ -3400,13 +3513,15 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     // A bypassed password fan-out (#3488) forces the sensitive marker even
     // when this target has not itself classified its prompt as sensitive.
     const sensitive = passwordPromptActiveRef.current || options?.sensitive === true;
+    const broadcastThisSend = options?.broadcast !== undefined
+      ? options.broadcast === true
+      : isBroadcastEnabledRef.current;
     if (
       shouldBroadcastDuringSensitivePrompt({
         sensitivePromptActive: sensitive,
         broadcastPasswordBypass: broadcastPasswordBypassRef.current,
       })
-      && options?.broadcast !== false
-      && isBroadcastEnabledRef.current
+      && broadcastThisSend
       && onBroadcastInputRef.current
     ) {
       const broadcastDeliveredSessionIds = onBroadcastInputRef.current(data, sessionId, {
@@ -3416,6 +3531,11 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         // peer writes keep skipping input interceptors.
         ...(sensitive ? { sourceSensitive: true } : {}),
         ...(lineDelayMs ? { lineDelayMs } : {}),
+        // Compose-bar send-to-all while the toolbar switch is off. Keystrokes
+        // and snippets leave this unset and stay on the toolbar gate.
+        ...(options?.broadcast === true && !isBroadcastEnabledRef.current
+          ? { composePeerFanOut: true }
+          : {}),
       });
       // #3491: report the sessions that received the fan-out so callers (the
       // solo compose bar) can detect a payload delivered into a sensitive
@@ -4094,6 +4214,15 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     onClipboardImageUploadResult: handleClipboardImageUploadResult,
   });
 
+  const handleSessionLogAction = useCallback(async (action: SessionLogAction) => {
+    try {
+      await performSessionLogAction(sessionRef.current ?? sessionId, action);
+    } catch (err) {
+      logger.error("[Terminal] Failed to open or reveal session log:", err);
+      toast.error(t('terminal.toolbar.openSessionLogFailed'));
+    }
+  }, [sessionId, t]);
+
   const handleToggleSessionLog = useCallback(async () => {
     const currentSessionId = sessionRef.current ?? sessionId;
     if (!currentSessionId) {
@@ -4143,6 +4272,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       if (startResult?.success) {
         if (!startResult?.started && startResult?.canceled) return;
         setIsSessionLogging(!!startResult?.started);
+        if (startResult?.started) setCanOpenSessionLog(true);
       } else {
         toast.error(startResult?.error || "Failed to start session log");
       }
@@ -4167,14 +4297,21 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     const currentSessionId = sessionRef.current ?? sessionId;
     if (!currentSessionId) {
       setIsSessionLogging(false);
+      setCanOpenSessionLog(false);
       return;
     }
 
     let cancelled = false;
     void getManualSessionLogStatus({ sessionId: currentSessionId }).then((result) => {
-      if (!cancelled) setIsSessionLogging(!!result?.isLogging);
+      if (!cancelled) {
+        setIsSessionLogging(!!result?.isLogging);
+        setCanOpenSessionLog(!!result?.hasSessionLog);
+      }
     }).catch(() => {
-      if (!cancelled) setIsSessionLogging(false);
+      if (!cancelled) {
+        setIsSessionLogging(false);
+        setCanOpenSessionLog(false);
+      }
     });
 
     return () => {
@@ -4250,6 +4387,8 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       isSearchOpen={isSearchOpen}
       onToggleSearch={handleToggleSearch}
       showLogButton
+      onSessionLogAction={handleSessionLogAction}
+      canOpenSessionLog={canOpenSessionLog}
       onToggleSessionLog={handleToggleSessionLog}
       isSessionLogging={isSessionLogging}
       isSessionLogDisabled={status !== "connected" && !isSessionLogging}
@@ -4282,6 +4421,8 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     handleSendYmodem,
     handleSetTerminalEncoding,
     handleToggleSessionLog,
+    handleSessionLogAction,
+    canOpenSessionLog,
     handleToggleSearch,
     handleToolbarRecordingToggle,
     host,
@@ -4328,6 +4469,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
 
   xTermRuntimeContextRef.current = {
     host,
+    getHost: () => archiveHostRef.current,
     fontFamilyId,
     resolvedFontFamily,
     fontSize: effectiveFontSize,
@@ -4634,6 +4776,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     isSearchOpen,
     hibernateEnabled: hibernateEnabled,
     hibernateDelayMs: resolveTerminalHibernateDelayMs(terminalSettings),
+    hibernateKeepRendererCount: resolveHibernateKeepRendererCount(terminalSettings),
     fileTransferActive: hibernateFileTransferActive,
     hibernatedRef,
     softHiddenRef,
@@ -4651,11 +4794,11 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     onWake: wakeFromHibernateRuntime,
   });
 
-  useTerminalEffects({ CONNECTION_TIMEOUT, Error, XTERM_PERFORMANCE_CONFIG, applyUserCursorPreference, applyUserCursorWidthPreference, shouldApplyUserCursorPreference, snapshotUserCursorPreference, auth, autocompleteCloseRef, autocompleteInputRef, autocompleteKeyEventRef, autocompleteRepositionRef, captureTerminalLogData, chainHosts: resolvedChainHosts, chainProgress, clearTerminalCwd, commandBufferRef, connectionLogBufferRef, containerRef, createPromptLineBreakState, createReplaySafeTerminalLogSanitizer, createXTermRuntime, deferTerminalResizeRef, disableTerminalFontZoomRef, effectiveFontSize, effectiveFontWeight, effectiveTheme, error, executeSnippetCommand, finalizeTerminalLogData, fitAddonRef, fontFamilyId, fontSize, fontWeightFixupDoneRef, forceCloseHibernatedSession, forceSyncRenderAfterResize, handleOsc52ReadRequest, handleTerminalDataCaptureOnce, hasConnectedRef, hasRuntimeRef, host, hotkeySchemeRef, hibernatedRef, identities, inWorkspace, isBootActiveRef, bootEpochRef, isBroadcastEnabledRef, broadcastPasswordBypassRef, isComposeBarOpen: effectiveComposeBarOpen, isConnectionAwaitingUserInput, isConnectionPastTcpDial, isFocusMode, isFocused, isLocalConnection, isNetworkDevice, isResizing: deferTerminalResize, isRestoringSelectionRef, isSearchOpen, isSerialConnection, isVisible, isVisibleRef, keyBindingsRef, keys, kittyKeyboardProtocolEnabledForSession, knownCwdRef, lastFittedSizeRef, lastToastedErrorRef, logger, mouseTrackingRef, needsHostKeyVerification, onBroadcastInputRef, onBroadcastInterruptPriorityChange, onCommandExecuted, onCommandSubmitted: cwdAwareOnCommandSubmitted, onHotkeyActionRef, onOpenExternalError, onOutputTriggerUserInputRef: noteOutputTriggerUserInputRef, onPluginRuntimeCwdChange: pluginAwareOnRuntimeCwdChange, onSnippetShortkeyRef, onSnippetExecutorChange, onTerminalCwdChange, onTerminalTitleChange, onTerminalBell, onTerminalFontSizeChange, paneLayoutKey, passwordPromptActiveRef, pendingAuthRef, pendingOutputScrollRef, pluginDecorationRefreshRef, pluginDecorationRules, pluginDecorationRulesRef, pluginTerminalLifecycle, pluginTerminalProviderRevision, isPluginTerminalProviderAvailable, requestPluginTerminalProviders, prepareRestoredReconnect, prepareInitialCwdIntent, prevIsResizingRef, promptLineBreakStateRef, resizeSession, resolveHostAuth, resolvedFontFamily, safeFit, scriptRecorderRef: recorderRef, searchAddonRef, serialConfig, serialLineBufferRef, serializeAddonRef, sessionId, sessionRef, sessionStarters, setError, setHasMouseTracking, setIsCancelling, setIsDisconnectedDialogDismissed, requestSearchFocus, setNeedsHostKeyVerification, setPendingHostKeyInfo, setPendingHostKeyRequestId, setProgressLogs, setProgressValue, setShowLogs, setStatus, setTimeLeft, shellType, shouldEnableNativeUserInputAutoScroll, shouldProbeSessionCwd, shouldStartTerminalBackend, vaultInitialized, attachExistingSession, attachAuthorization, attachHomeWebContentsIdRef, snippetsRef, splitResizeActive: isResizing, status, statusRef, sudoAutofillRef, t, teardown, telnetLocalEchoRef, termRef, terminalAltKeyOptions, terminalBackend, terminalContextActionsRef, terminalCwdTracker, terminalDataCapturedRef, terminalLogSanitizerRef, terminalOutputHistory: terminalOutputHistoryRef.current, terminalSettings, terminalSettingsRef, terminalTitleRef, toHostKeyInfo, toast, updateStatus, useEffect, useLayoutEffect, workspaceId, xtermRuntimeRef, zmodem, zmodemToastedRef, restoreState });
+  useTerminalEffects({ CONNECTION_TIMEOUT, Error, XTERM_PERFORMANCE_CONFIG, applyUserCursorPreference, applyUserCursorWidthPreference, shouldApplyUserCursorPreference, snapshotUserCursorPreference, auth, autocompleteCloseRef, autocompleteInputRef, autocompleteKeyEventRef, autocompleteRepositionRef, captureTerminalLogData, chainHosts: resolvedChainHosts, chainProgress, clearTerminalCwd, commandBufferRef, connectionLogBufferRef, containerRef, createPromptLineBreakState, createReplaySafeTerminalLogSanitizer, createXTermRuntime, deferTerminalResizeRef, disableTerminalFontZoomRef, effectiveFontSize, effectiveFontWeight, effectiveTheme, error, executeSnippetCommand, finalizeTerminalLogData, fitAddonRef, fontFamilyId, fontSize, fontWeightFixupDoneRef, forceCloseHibernatedSession, forceSyncRenderAfterResize, handleOsc52ReadRequest, handleTerminalDataCaptureOnce, hasConnectedRef, hasRuntimeRef, host, hotkeySchemeRef, hibernatedRef, identities, inWorkspace, isBootActiveRef, bootEpochRef, isBroadcastEnabledRef, broadcastPasswordBypassRef, isComposeBarOpen: effectiveComposeBarOpen, isConnectionAwaitingUserInput, isConnectionPastTcpDial, isFocusMode, isFocused, isLocalConnection, isNetworkDevice, isResizing: deferTerminalResize, isRestoringSelectionRef, isSearchOpen, isSerialConnection, isVisible, isVisibleRef, keyBindingsRef, keys, kittyKeyboardProtocolEnabledForSession, knownCwdRef, lastFittedSizeRef, lastToastedErrorRef, logger, mouseTrackingRef, needsHostKeyVerification, onBroadcastInputRef, onBroadcastInterruptPriorityChange, onCommandExecuted, onCommandSubmitted: cwdAwareOnCommandSubmitted, onCommandSettled: onCommandSubmitted, onHotkeyActionRef, onOpenExternalError, onOutputTriggerUserInputRef: noteOutputTriggerUserInputRef, onPluginRuntimeCwdChange: pluginAwareOnRuntimeCwdChange, onSnippetShortkeyRef, onSnippetExecutorChange, onTerminalCwdChange, onTerminalTitleChange, onTerminalBell, onTerminalFontSizeChange, paneLayoutKey, passwordPromptActiveRef, pendingAuthRef, pendingOutputScrollRef, pluginDecorationRefreshRef, pluginDecorationRules, pluginDecorationRulesRef, pluginTerminalLifecycle, pluginTerminalProviderRevision, isPluginTerminalProviderAvailable, requestPluginTerminalProviders, prepareRestoredReconnect, prepareInitialCwdIntent, prevIsResizingRef, promptLineBreakStateRef, resizeSession, resolveHostAuth, resolvedFontFamily, safeFit, scriptRecorderRef: recorderRef, searchAddonRef, serialConfig, serialLineBufferRef, serializeAddonRef, sessionId, sessionRef, sessionStarters, setError, setHasMouseTracking, setIsCancelling, setIsDisconnectedDialogDismissed, requestSearchFocus, setNeedsHostKeyVerification, setPendingHostKeyInfo, setPendingHostKeyRequestId, setProgressLogs, setProgressValue, setShowLogs, setStatus, setTimeLeft, shellType, shouldEnableNativeUserInputAutoScroll, shouldProbeSessionCwd, shouldStartTerminalBackend, vaultInitialized, attachExistingSession, attachAuthorization, attachHomeWebContentsIdRef, snippetsRef, splitResizeActive: isResizing, status, statusRef, sudoAutofillRef, t, teardown, telnetLocalEchoRef, termRef, terminalAltKeyOptions, terminalBackend, terminalContextActionsRef, terminalCwdTracker, terminalDataCapturedRef, terminalLogSanitizerRef, terminalOutputHistory: terminalOutputHistoryRef.current, terminalSettings, terminalSettingsRef, terminalTitleRef, toHostKeyInfo, toast, updateStatus, useEffect, useLayoutEffect, workspaceId, xtermRuntimeRef, zmodem, zmodemToastedRef, restoreState });
 
   return (
     <>
-      <TerminalView ctx={{ Activity, ArrowDownToLine, ArrowUpFromLine, Button, Clock3, Copy, Cpu, HardDrive, HoverCard, HoverCardContent, HoverCardTrigger, Maximize2, MemoryStick, Radio, RefreshCcw, Sparkles, SquareArrowOutUpRight, Unplug, TerminalAutocomplete, TerminalComposeBar, TerminalConnectionDialog, TerminalContextMenu, TerminalSearchBar, Tooltip, TooltipContent, TooltipTrigger, ZmodemOverwriteDialog, ZmodemProgressIndicator, auth, autocompleteAcceptTextRef, autocompleteCloseRef, autocompleteHostOs, autocompleteInputRef, autocompleteKeyEventRef, autocompleteRepositionRef, autocompleteSettings, canUpdateHost: !!onUpdateHost, chainProgress, cn, compactToolbar, lineTimestampsAvailable, containerRef, effectiveFontSize, effectiveFontWeight, effectiveTheme, error, executeSnippet, executeSnippetCommand, handleAddSelectionToAI: onAddSelectionToAI ? handleAddSelectionToAI : undefined, handleCancelConnect, handleCloseDisconnectedSession, handleCloseSearch, handleDisconnect: (attachExistingSession || compactToolbar) ? undefined : handleDisconnect, handleDismissDisconnectedDialog, handleDragEnter, handleDragLeave, handleDragOver, handleDrop, handleFindNext, handleFindPrevious, handleHostKeyAddAndContinue, handleHostKeyClose, handleHostKeyContinue, handleOpenHostBrowser, handleOsc52ReadResponse, handleOsc7SetupConfirm, handleOsc7SetupOpenChange, handleReceiveYmodem, handleRetry, handleSearch, handleSendYmodem, handleTopOverlayMouseDownCapture, hasMouseTracking, host, hotkeyScheme, inWorkspace, isBroadcastEnabled, isCancelling, isComposeBarOpen: effectiveComposeBarOpen, isConnectionAwaitingUserInput, isDraggingOver, isFocusMode, isFocusedPane, isLocalConnection, remoteDragDropUsesZmodem, isPluginTerminalProviderAvailable, isReconnectActive, isSerialConnection, isSearchOpen, isSupportedOs, isSystemSidebarEligible, isVisible, keyBindings, keys, identities, knownCwdRef, needsHostKeyVerification, onAddSelectionToAI, onBroadcastInput, onCloseSession, onDetach, onDetachDragEnd, onDetachDragStart, onDetachPointerDown, onEndSessionDrag, onExpandToFocus, onTogglePaneMagnification, onOpenSystem, onRename, onSplitHorizontal, onSplitVertical, onStartSessionDrag, onToggleBroadcast, onUpdateHost: handleUpdateHostFromTerminal, osc52ReadPromptVisible, osc7SetupOpen, osc7SetupRunning, passwordPromptActiveRef, pendingHostKeyInfo, progressLogs, progressValue, renderControls, resolvedFontFamily, restoreState, scrollToBottomAfterProgrammaticInput, searchMatchCount, searchFocusToken, scriptExecutionOverlay: activeScriptRun ? (
+      <TerminalView ctx={{ Activity, ArrowDownToLine, ArrowUpFromLine, Button, Clock3, Copy, Cpu, HardDrive, HoverCard, HoverCardContent, HoverCardTrigger, Maximize2, MemoryStick, Radio, RefreshCcw, Sparkles, SquareArrowOutUpRight, Unplug, TerminalAutocomplete, TerminalComposeBar, TerminalConnectionDialog, TerminalContextMenu, TerminalSearchBar, Tooltip, TooltipContent, TooltipTrigger, ZmodemOverwriteDialog, ZmodemProgressIndicator, auth, autocompleteAcceptTextRef, autocompleteCloseRef, autocompleteHostOs, autocompleteInputRef, autocompleteKeyEventRef, autocompleteRepositionRef, autocompleteSettings, canUpdateHost: !!onUpdateHost, chainProgress, cn, compactToolbar, lineTimestampsAvailable, containerRef, effectiveFontSize, effectiveFontWeight, effectiveTheme, error, executeSnippet, executeSnippetCommand, handleAddSelectionToAI: onAddSelectionToAI ? handleAddSelectionToAI : undefined, handleCancelConnect, handleCloseDisconnectedSession, handleCloseSearch, handleDisconnect: (attachExistingSession || compactToolbar) ? undefined : handleDisconnect, handleDismissDisconnectedDialog, handleDragEnter, handleDragLeave, handleDragOver, handleDrop, handleFindNext, handleFindPrevious, handleHostKeyAddAndContinue, handleHostKeyClose, handleHostKeyContinue, handleOpenHostBrowser, handleOpenSFTP, handleOsc52ReadResponse, handleOsc7SetupConfirm, handleOsc7SetupOpenChange, handleReceiveYmodem, handleRetry, handleSearch, handleSendYmodem, handleTopOverlayMouseDownCapture, hasMouseTracking, host, hotkeyScheme, inWorkspace, isBroadcastEnabled, composeSendToAll, onToggleComposeSendTarget, isCancelling, isComposeBarOpen: effectiveComposeBarOpen, isConnectionAwaitingUserInput, isDraggingOver, isFocusMode, isFocusedPane, isLocalConnection, remoteDragDropUsesZmodem, isPluginTerminalProviderAvailable, isReconnectActive, isSerialConnection, isSearchOpen, isSupportedOs, isSystemSidebarEligible, isVisible, keyBindings, keys, identities, knownCwdRef, needsHostKeyVerification, onAddSelectionToAI, onBroadcastInput, onCloseSession, onDetach, onDetachDragEnd, onDetachDragStart, onDetachPointerDown, onEndSessionDrag, onExpandToFocus, onTogglePaneMagnification, onOpenSystem, onRename, onSplitHorizontal, onSplitVertical, onStartSessionDrag, onToggleBroadcast, onUpdateHost: handleUpdateHostFromTerminal, osc52ReadPromptVisible, osc7SetupOpen, osc7SetupRunning, passwordPromptActiveRef, pendingHostKeyInfo, progressLogs, progressValue, renderControls, resolvedFontFamily, restoreState, scrollToBottomAfterProgrammaticInput, searchMatchCount, searchFocusToken, scriptExecutionOverlay: activeScriptRun ? (
         <ScriptExecutionOverlay
           run={activeScriptRun}
           onPause={() => { void pauseScriptRun(activeScriptRun.runId); }}

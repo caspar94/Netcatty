@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fitLargeToolResultForModel } from './harness/toolResultFitting';
 import type { GroupConfig, Host, ManagedSource, PortForwardingRule, ProxyProfile, Snippet, VaultNote } from '../../domain/models';
-import { handleVaultAgentOp, runSerializedVaultAgentRequest, type VaultAgentApiDeps } from './vaultAgentBridgeClient';
+import { handleVaultAgentOp, runSerializedVaultAgentRequest, sanitizeHostForAgent, type VaultAgentApiDeps } from './vaultAgentBridgeClient';
 
 type DepsSeed = {
   hosts?: Host[];
@@ -381,6 +381,19 @@ describe('handleVaultAgentOp vault notes', () => {
 });
 
 describe('handleVaultAgentOp vault hosts', () => {
+  it('host.open preserves workspace placement and rejects malformed targets before opening', async () => {
+    const host: Host = { id: 'workspace-host', label: 'test', tags: [], os: 'linux', hostname: 'example.com', port: 22, username: 'ops' };
+    const calls: unknown[] = [];
+    const deps = createDeps({ hosts: [host], openHost: (openedHost, _external, options) => {
+      calls.push(options);
+      return { ok: true, sessionId: 'workspace-session', host: openedHost, workspaceId: 'ws-1' };
+    } });
+    const result = await handleVaultAgentOp('host.open', { hostId: host.id, workspaceId: 'current', newTab: true }, deps);
+    assert.equal(result.workspaceId, 'ws-1');
+    assert.deepEqual(calls, [{ workspaceId: 'current' }]);
+    assert.equal((await handleVaultAgentOp('host.open', { hostId: host.id, workspaceId: '' }, deps)).ok, false);
+    assert.equal(calls.length, 1);
+  });
   const csvText = [
     'Label,Hostname,Port,Username,Groups',
     'web-1,10.0.0.10,22,deploy,prod/web',
@@ -402,6 +415,20 @@ describe('handleVaultAgentOp vault hosts', () => {
     assert.equal(hosts?.length, 1);
     assert.equal(hosts?.[0]?.hostname, '10.0.0.1');
     assert.equal('password' in (hosts?.[0] ?? {}), false);
+  });
+
+  it('sanitizeHostForAgent omits TOTP secrets', () => {
+    const sanitized = sanitizeHostForAgent({
+      id: 'host-1',
+      label: 'prod',
+      hostname: '10.0.0.1',
+      username: 'root',
+      port: 22,
+      tags: [],
+      os: 'linux',
+      totp: { uri: 'otpauth://totp/Example:alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' },
+    });
+    assert.equal('totp' in sanitized, false);
   });
 
   it('host.open creates a terminal session for a vault host', async () => {
@@ -470,6 +497,24 @@ describe('handleVaultAgentOp vault hosts', () => {
     await handleVaultAgentOp('host.open', { hostId: 'host-open-3', chatSessionId: '__external_mcp__' }, deps);
 
     assert.equal(receivedIsExternalMcpCall, true);
+  });
+
+  it('host.open does not bind scope when workspace insertion is refused', async (t) => {
+    const { netcattyBridge } = await import('../services/netcattyBridge');
+    let scopeWrites = 0;
+    t.mock.method(netcattyBridge, 'get', () => ({
+      aiMcpMergeSessions: async () => { scopeWrites += 1; },
+    } as unknown as NetcattyBridge));
+    const host = { id: 'closed-workspace-host', label: 'Local', hostname: 'localhost', protocol: 'local' } as Host;
+    const deps = createDeps({
+      hosts: [host],
+      openHost: () => ({ ok: false, error: 'Workspace closed before insertion.' }),
+    });
+    const result = await handleVaultAgentOp('host.open', {
+      hostId: host.id, workspaceId: 'closed-workspace', chatSessionId: 'chat-1', newTab: true,
+    }, deps);
+    assert.deepEqual(result, { ok: false, error: 'Workspace closed before insertion.' });
+    assert.equal(scopeWrites, 0);
   });
 
   it('host.open registers saved-host identity immediately but not for a temporary host', async (t) => {

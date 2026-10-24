@@ -38,6 +38,12 @@ declare global {
     isDefault?: boolean;
   }
 
+  interface NetcattyTotpConfig {
+    uri: string;
+    autoSubmit?: boolean;
+    promptPattern?: string;
+  }
+
   // Jump host configuration for SSH tunneling
   interface NetcattyJumpHost {
     hostname: string;
@@ -47,6 +53,7 @@ declare global {
     authMethod?: import("./domain/models").HostAuthMethod;
     requiresMfa?: boolean;
     password?: string;
+    totp?: NetcattyTotpConfig;
     privateKey?: string;
     certificate?: string;
     passphrase?: string;
@@ -103,6 +110,7 @@ declare global {
     requiresMfa?: boolean;
     port?: number;
     password?: string;
+    totp?: NetcattyTotpConfig;
     privateKey?: string;
     // Optional OpenSSH user certificate
     certificate?: string;
@@ -120,6 +128,13 @@ declare global {
     passphrase?: string;
     knownHosts?: import("./domain/models").KnownHost[];
     verifyHostKeys?: boolean;
+    /**
+     * When true, an untrusted host key fails the dial instead of waiting for
+     * a renderer prompt. Transfer opens set this: their session id is not the
+     * SFTP page's host-key dialog, so an unanswered prompt leaves the upload
+     * on "Waiting...".
+     */
+    hostKeyUnattended?: boolean;
     // Environment variables to set in the remote shell
     env?: Record<string, string>;
     // Proxy configuration
@@ -221,6 +236,7 @@ declare global {
     authMethod?: import("./domain/models").HostAuthMethod;
     requiresMfa?: boolean;
     password?: string;
+    totp?: NetcattyTotpConfig;
     privateKey?: string;
     certificate?: string;
     keyId?: string;

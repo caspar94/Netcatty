@@ -22,6 +22,7 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { LazyLoadBoundary } from '../../components/ui/lazy-load-boundary';
 import { toast } from '../../components/ui/toast';
+import { openQuickConnectFromInput } from '../quickConnectBridge';
 import { AppHostTreeLayer } from './AppHostTreeLayer';
 import { AppHostEditorLayer } from './AppHostEditorLayer';
 import { AppPluginKeybindingHost } from './AppPluginKeybindingHost';
@@ -271,7 +272,7 @@ function AppViewInner({ domains }: AppViewProps) {
     handleEndSessionDrag, handleFollowAppTerminalThemeChange, handleHostConnectWithProtocolCheck, handleHotkeyAction, handleKeyboardInteractiveCancel, handleKeyboardInteractiveSubmit,
     handleOpenHostFromVaultNote, handleOpenQuickSwitcher, handleOpenSettings, handleOpenVaultHostFromChat, handleOpenVaultNoteFromChat, handleOpenVaultSectionFromChat, handleOpenVaultSnippetFromChat, handleRootContextMenu, handlePassphraseCancel, handlePassphraseSkip, handlePassphraseSubmit, handleFidoPromptSubmit, handleFidoPromptCancel, handleProtocolSelect,
     handleRequestCloseEditorTabRef, handleSessionStatusChange, handleSyncNowManual, handleTerminalDataCapture, handleUpdateHostFromTerminal,
-    hostById, hosts, terminalHosts, updateTerminalHosts, hotkeyScheme, identities, importOrReuseKey, isBroadcastEnabled, isGlobalBroadcastEnabled, onToggleGlobalBroadcast, canUseGlobalBroadcast, isCreateWorkspaceOpen, isMacClient, isQuickSwitcherOpen,
+    hostById, hosts, terminalHosts, updateTerminalHosts, hotkeyScheme, identities, importOrReuseKey, isBroadcastEnabled, isComposeSendToAll, onToggleComposeSendTarget, isGlobalBroadcastEnabled, isGlobalComposeSendToAll, onToggleGlobalBroadcast, onToggleGlobalComposeSendTarget, canUseGlobalBroadcast, isCreateWorkspaceOpen, isMacClient, isQuickSwitcherOpen,
     keyBindings, keyboardInteractiveQueue, keys, logViews, managedSources, navigateToSection, openLogView, openNoteRequest, orderedTabsWithEditors, orphanSessions,
     passphraseQueue, fidoPromptQueue, protocolSelectHost, proxyProfiles, portForwardingRules, quickResults, quickSearch, removeSessionFromWorkspace, reorderWorkTabs, reorderWorkspaceSessions,
     resolveEmptyVaultConflict, resolveSessionAppearance, runSnippet, sessionLogsDir, sessionLogsEnabled, sessionLogsFormat, sessionLogsTimestampsEnabled, sessionRenameTarget, sshDebugLogsEnabled,
@@ -375,6 +376,14 @@ function AppViewInner({ domains }: AppViewProps) {
     const rootDir = ws.root.type === 'split' ? ws.root.direction : 'vertical';
     appendHostToWorkspace(workspaceId, resolveWorkspaceAppendHost(host), rootDir);
   }, [appendHostToWorkspace, hosts, resolveWorkspaceAppendHost, workspaces]);
+
+  const pendingKeyboardRequest = keyboardInteractiveQueue[0] || null;
+  const pendingTotpUri = pendingKeyboardRequest?.totpUri;
+  const handleFillTotp = useCallback(async () => {
+    if (!pendingTotpUri) return null;
+    const result = await netcattyBridge.get()?.previewTotp?.({ uri: pendingTotpUri });
+    return result?.ok && result.code ? result.code : null;
+  }, [pendingTotpUri]);
 
   const isPeerSessionWindow = typeof window !== 'undefined'
     && window.location.hash.startsWith('#/session-window');
@@ -775,8 +784,12 @@ function AppViewInner({ domains }: AppViewProps) {
           onCreateLocalTerminal={handleCreateLocalTerminal}
           isBroadcastEnabled={isBroadcastEnabled}
           onToggleBroadcast={toggleBroadcast}
+          isComposeSendToAll={isComposeSendToAll}
+          onToggleComposeSendTarget={onToggleComposeSendTarget}
           isGlobalBroadcastEnabled={isGlobalBroadcastEnabled}
+          isGlobalComposeSendToAll={isGlobalComposeSendToAll}
           onToggleGlobalBroadcast={onToggleGlobalBroadcast}
+          onToggleGlobalComposeSendTarget={onToggleGlobalComposeSendTarget}
           canUseGlobalBroadcast={canUseGlobalBroadcast}
           updateHosts={updateTerminalHosts}
           updateSnippets={updateSnippets}
@@ -930,6 +943,7 @@ function AppViewInner({ domains }: AppViewProps) {
               showSftpTab={showSftpTab}
               onQueryChange={setQuickSearch}
               onSelect={handleHostConnectWithProtocolCheck}
+              onQuickConnect={openQuickConnectFromInput}
               onEditHost={(host) => {
                 setIsQuickSwitcherOpen(false);
                 setQuickSearch('');
@@ -1022,6 +1036,8 @@ function AppViewInner({ domains }: AppViewProps) {
         request={keyboardInteractiveQueue[0] || null}
         onSubmit={handleKeyboardInteractiveSubmit}
         onCancel={handleKeyboardInteractiveCancel}
+        canFillTotp={Boolean(pendingTotpUri)}
+        onFillTotp={handleFillTotp}
       />
       {/* Indicator when more 2FA requests are pending */}
       {keyboardInteractiveQueue.length > 1 && (

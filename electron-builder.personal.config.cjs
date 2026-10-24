@@ -6,7 +6,7 @@ module.exports = {
     ...base,
     artifactName: 'Netcatty-${version}-${os}-${arch}.${ext}',
     extraMetadata: {
-        version: '1.1.84-C1',
+        version: '1.1.86-C1',
         homepage: 'https://github.com/caspar94/Netcatty',
     },
     directories: { ...base.directories, output: platform === 'darwin' ? 'release/personal' : 'release' },
