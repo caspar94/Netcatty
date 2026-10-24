@@ -218,6 +218,7 @@ declare global {
       authMethod?: import("../../domain/models").HostAuthMethod;
       requiresMfa?: boolean;
       password?: string;
+      totp?: NetcattyTotpConfig;
       privateKey?: string;
       certificate?: string;
       publicKey?: string;
@@ -301,6 +302,13 @@ declare global {
         gpuName?: string | null;      // First GPU name
         gpuMemUsed?: number | null;   // Summed VRAM used in MB
         gpuMemTotal?: number | null;  // Summed VRAM total in MB
+        gpus?: Array<{                // Per-GPU utilization and VRAM (MiB)
+          index: number;
+          name: string;
+          utilization: number | null;
+          memoryUsed: number | null;
+          memoryTotal: number | null;
+        }>;
         memTotal: number | null;      // Total memory in MB
         memUsed: number | null;       // Used memory in MB (excluding buffers/cache)
         memFree: number | null;       // Free memory in MB
@@ -313,6 +321,8 @@ declare global {
           memPercent: number;
           command: string;
         }>;
+        diskReadSpeed?: number | null;  // Linux hardware-backed block devices, bytes/sec; null while unavailable/warming up
+        diskWriteSpeed?: number | null; // Aggregate without partitions or stacked virtual devices
         diskPercent: number | null;   // Disk usage percentage for root partition
         diskUsed: number | null;      // Disk used in GB
         diskTotal: number | null;     // Total disk in GB
@@ -584,6 +594,7 @@ declare global {
         savedPassword?: string | null;
         /** When false, UI must not offer saving the response as the host password. */
         allowSavePassword?: boolean;
+        totpUri?: string;
         scope?: "terminal" | "external";
         bootEpoch?: number;
       }) => void

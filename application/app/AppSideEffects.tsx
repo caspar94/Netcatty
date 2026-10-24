@@ -47,6 +47,7 @@ import { buildSshDeepLinkConnectionHost, buildSshDeepLinkEphemeralHost, buildSsh
 import { buildTelnetDeepLinkConnectionHost, buildTelnetDeepLinkEphemeralHostFromSaved, buildTelnetDeepLinkOpenHost, findTelnetDeepLinkHost, materializeTelnetDeepLinkMatchHost, parseTelnetDeepLink } from '../../domain/telnetDeepLink';
 import { buildJmsDeepLinkEphemeralHost, isSupportedJmsProtocol, parseJmsDeepLink } from '../../domain/jmsDeepLink';
 import { applyEphemeralHostDistroUpdate, applyEphemeralHostsUpdate, splitHostsUpdateByEphemeral } from '../../domain/ephemeralHosts';
+import { prepareConnectionHost, temporaryConnectionPrepareOptions } from '../../domain/legacyAlgorithms';
 import { resolveHostAuth } from '../../domain/sshAuth';
 import { isEncryptedCredentialPlaceholder, stripSyncPayloadEncryptedCredentials } from '../../domain/credentials';
 import {
@@ -55,6 +56,7 @@ import {
 } from '../../domain/terminalAppearance';
 import { selectConnectionLogForTerminalDataCapture } from '../../domain/connectionLog';
 import { collectSessionIds } from '../../domain/workspace';
+import { resolveAgentHostWorkspace } from '../../domain/agentHostWorkspace';
 import { useHostOpenSessionReuse } from '../state/useHostOpenSessionReuse';
 import type { PaneMagnificationController } from '../../domain/paneMagnification';
 import { resolveCloseIntent } from '../state/resolveCloseIntent';
@@ -69,6 +71,7 @@ import {
 import { getCredentialProtectionAvailability } from '../../infrastructure/services/credentialProtection';
 import { netcattyBridge } from '../../infrastructure/services/netcattyBridge';
 import { localStorageAdapter } from '../../infrastructure/persistence/localStorageAdapter';
+import { terminalHostTreeStore } from '../state/terminalHostTreeStore';
 import {
   markExternalMcpStartupReady,
   readExternalMcpFocusOnHostOpen,
@@ -94,6 +97,7 @@ import { resolveSnippetCommand } from '../../components/SnippetExecutionProvider
 import { isScriptSnippet } from '../../domain/snippetScript.ts';
 import { collectSnippetDeleteIds } from '../../domain/snippetSelection.ts';
 import { shouldOpenLocalTerminalOnStartup, resolveStartupLandingSetting } from '../../domain/startupLanding';
+import { createOpenTerminalQueue } from './openTerminalQueue';
 import { useAppStartupEffects } from './useAppStartupEffects';
 import { handleTrayJumpToSessionImpl, handleTrayTogglePortForwardImpl, handleTrayPanelConnectImpl, handleTrayPanelConnectRequestImpl, flushQueuedTrayPanelConnectHostsImpl, handleGlobalHotkeyKeyDownImpl, handleEscapeKeyDownImpl, handleKeyboardInteractiveSubmitImpl, handleKeyboardInteractiveCancelImpl, handlePassphraseSubmitImpl, handlePassphraseCancelImpl, handlePassphraseSkipImpl, handleFidoPromptSubmitImpl, handleFidoPromptCancelImpl, createLocalTerminalWithCurrentShellImpl, splitSessionWithCurrentShellImpl, copySessionWithCurrentShellImpl, duplicateSessionWithCurrentShellImpl, copyWorkspaceWithCurrentShellImpl, copySessionToNewWindowWithCurrentShellImpl, confirmIfBusyLocalTerminalImpl, closeTabsBatchImpl, executeHotkeyActionImpl, handleCreateLocalTerminalImpl, handleConnectToHostImpl, handleTerminalDataCaptureImpl, hasMultipleProtocolsImpl, handleHostConnectWithProtocolCheckImpl, handleProtocolSelectImpl, handleRootContextMenuImpl, markForwardedNativeShortcutEvent } from './AppHandlers';
 
@@ -252,6 +256,7 @@ export function AppSideEffects() {
     createLocalTerminal,
     createSerialSession,
     connectToHost,
+    appendHostToWorkspaceConfirmed,
     closeSession,
     closeSessions,
     closeWorkspace,
@@ -1124,6 +1129,7 @@ export function AppSideEffects() {
       toggleBroadcast,
       toggleGlobalBroadcast,
       canUseGlobalBroadcast: canUseGlobalBroadcastRef.current,
+      toggleHostTree: () => terminalHostTreeStore.toggle(),
       toggleScriptsSidePanelRef,
       toggleSidePanelRef,
       toggleWindowOpacity,
@@ -1447,13 +1453,24 @@ export function AppSideEffects() {
     name,
   ), [createWorkspaceFromTargets, resolveEffectiveHost]);
 
+  // VaultView memo ignores onConnect identity, so this callback can stay
+  // closed over an older render. Temporary-connection toggles are read here,
+  // at connect time, so turning them on or off applies without a reload.
+  const temporaryConnectionSettingsRef = useRef(terminalSettings);
+  temporaryConnectionSettingsRef.current = terminalSettings;
+
   // Wrapper to connect to host with logging
-  const handleConnectToHost = useCallback((host: Host, alreadyEffective = false, hidden = false) => {
-    if (host.ephemeral) {
+  const handleConnectToHost = useCallback((host: Host, alreadyEffective = false, hidden = false, workspaceId?: string) => {
+    const liveTerminalSettings = temporaryConnectionSettingsRef.current;
+    const connectionHost = prepareConnectionHost(
+      host,
+      temporaryConnectionPrepareOptions(liveTerminalSettings),
+    );
+    if (connectionHost.ephemeral) {
       setEphemeralHosts((previous) => {
-        const existingIndex = previous.findIndex((candidate) => candidate.id === host.id);
-        if (existingIndex < 0) return [...previous, host];
-        return previous.map((candidate, index) => index === existingIndex ? host : candidate);
+        const existingIndex = previous.findIndex((candidate) => candidate.id === connectionHost.id);
+        if (existingIndex < 0) return [...previous, connectionHost];
+        return previous.map((candidate, index) => index === existingIndex ? connectionHost : candidate);
       });
     }
     const effectiveHostResolver = alreadyEffective
@@ -1461,18 +1478,20 @@ export function AppSideEffects() {
       : resolveEffectiveHost;
     return handleConnectToHostImpl(() => ({
       addConnectionLog,
-      connectToHost,
+      connectToHost: workspaceId
+        ? (candidate: Host) => appendHostToWorkspaceConfirmed(workspaceId, candidate)
+        : connectToHost,
       discoveredShells,
-      host,
+      host: connectionHost,
       identities,
       keys,
       resolveEffectiveHost: effectiveHostResolver,
       resolveHostAuth,
       resolveShellSetting,
       systemInfoRef,
-      terminalSettings,
-    }), host, hidden);
-  }, [addConnectionLog, connectToHost, resolveEffectiveHost, identities, keys, discoveredShells, terminalSettings]);
+      terminalSettings: liveTerminalSettings,
+    }), connectionHost, hidden);
+  }, [addConnectionLog, appendHostToWorkspaceConfirmed, connectToHost, resolveEffectiveHost, identities, keys, discoveredShells]);
 
   const handleConnectToHostWithTabName = useCallback((host: Host, tabName?: string) => {
     const sessionId = handleConnectToHost(host);
@@ -1482,12 +1501,14 @@ export function AppSideEffects() {
     return sessionId;
   }, [handleConnectToHost, renameSessionInline]);
 
-  const openHostForVaultAgent = useCallback((host: Host, isExternalMcpCall: boolean) => {
+  const openHostForVaultAgent = useCallback((host: Host, isExternalMcpCall: boolean, options?: { workspaceId?: string }) => {
+    const target = resolveAgentHostWorkspace(options?.workspaceId, activeTabStore.getActiveTabId(), workspaces.map(workspace => workspace.id));
+    if (target.error) return { ok: false as const, error: target.error };
     // Silent sessions only apply to actual external MCP clients (chatSessionId
     // equals the reserved external-MCP scope). The in-app Catty AI chat's
     // host_open always opens a visible tab, as documented.
     const hidden = isExternalMcpCall && readExternalMcpSilentSessions();
-    const sessionId = handleConnectToHost(host, true, hidden);
+    const sessionId = handleConnectToHost(host, true, hidden, target.workspaceId);
     if (!sessionId) {
       return { ok: false as const, error: `Failed to open host "${host.id}".` };
     }
@@ -1496,8 +1517,8 @@ export function AppSideEffects() {
     if (readExternalMcpFocusOnHostOpen()) {
       void netcattyBridge.get()?.openMainWindow?.();
     }
-    return { ok: true as const, sessionId, host };
-  }, [handleConnectToHost]);
+    return { ok: true as const, sessionId, host, workspaceId: target.workspaceId };
+  }, [handleConnectToHost, workspaces]);
 
   const findExistingSessionForHostForVaultAgent = useHostOpenSessionReuse({
     sessions, hosts, keys, identities, resolveEffectiveHost,
@@ -1557,7 +1578,7 @@ export function AppSideEffects() {
     | { kind: 'ssh'; payload: DeepLinkPayload }
     | { kind: 'telnet'; payload: DeepLinkPayload }
     | { kind: 'jms'; payload: { url?: string } }
-    | { kind: 'open-terminal-path'; payload: { path?: string } }
+    | { kind: 'open-terminal-path'; payload: { path?: string; shell?: string } }
   >>([]);
 
   const _processSshDeepLink = useEffectEvent((payload: DeepLinkPayload) => {
@@ -1721,14 +1742,44 @@ export function AppSideEffects() {
     });
   }, [isPeerSessionWindow]);
 
-  const _processOpenTerminalPath = useEffectEvent((payload: { path?: string }) => {
+  // Shell discovery is part of this queue. A later path-only request, including
+  // one drained after App Lock, cannot create its tab ahead of an in-flight shell.
+  const openTerminalQueueRef = useRef(createOpenTerminalQueue());
+
+  const _processOpenTerminalPath = useEffectEvent((payload: { path?: string; shell?: string }) => {
     startupLaunchIntentReceivedRef.current = true;
     const localStartDir = typeof payload?.path === 'string' ? payload.path : '';
-    if (!localStartDir.trim()) return;
-    handleCreateLocalTerminal(undefined, { localStartDir });
+    const shellSetting = typeof payload?.shell === 'string' ? payload.shell.trim() : '';
+    void openTerminalQueueRef.current.enqueue(() => {
+      if (!shellSetting) {
+        if (!localStartDir.trim()) return;
+        handleCreateLocalTerminal(undefined, { localStartDir });
+        return;
+      }
+
+      return (async () => {
+        const shells = await ensureDiscoveredShells();
+        const resolved = resolveShellSetting(shellSetting, shells);
+        if (!resolved?.command) {
+          if (!localStartDir.trim()) return;
+          handleCreateLocalTerminal(undefined, { localStartDir });
+          return;
+        }
+        const matchedShell = shells.find((shell) => shell.id === shellSetting);
+        handleCreateLocalTerminal(
+          {
+            command: resolved.command,
+            args: resolved.args,
+            name: matchedShell?.name,
+            icon: matchedShell?.icon,
+          },
+          localStartDir.trim() ? { localStartDir } : undefined,
+        );
+      })();
+    });
   });
 
-  const _handleOpenTerminalPath = useEffectEvent((payload: { path?: string }) => {
+  const _handleOpenTerminalPath = useEffectEvent((payload: { path?: string; shell?: string }) => {
     if (shouldDeferExternalActionWhileAppLocked({ locked: appLockLocked })) {
       pendingDeepLinksWhileLockedRef.current.push({
         kind: 'open-terminal-path',
